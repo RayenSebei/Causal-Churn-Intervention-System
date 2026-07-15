@@ -26,19 +26,23 @@ def compute_shap_values(
 ) -> tuple[shap.Explainer, np.ndarray]:
     """Compute SHAP Explainer and values for the model.
 
+    Uses tree-path-dependent SHAP (default TreeExplainer). A background sample
+    is not required for that mode; background_sample_size is retained for API
+    compatibility but intentionally unused.
+
     Args:
         model: Fitted imblearn Pipeline with preprocessor, SMOTE, and XGBoost.
         X_sample: Feature dataframe to explain (typically test set).
-        background_sample_size: Size of the background sample for SHAP calculation.
+        background_sample_size: Unused (kept for callers); path-dependent SHAP.
 
     Returns:
         Tuple of (SHAP Explainer, SHAP values array).
     """
 
+    del background_sample_size  # path-dependent SHAP does not use a background set
     preprocessed_sample = model.named_steps["preprocessor"].transform(X_sample)
     xgb_model = model.named_steps["model"]
 
-    background = shap.sample(preprocessed_sample, min(background_sample_size, len(preprocessed_sample)))
     explainer = shap.TreeExplainer(xgb_model)
     shap_vals = explainer.shap_values(preprocessed_sample)
     return explainer, shap_vals
@@ -72,14 +76,14 @@ def explain_customer_churn(
     """Generate a plain-English explanation for a single customer's churn risk.
 
     Args:
-        customer_index: Row index of the customer in X_original.
-        shap_values: SHAP values array (n_samples, n_features).
+        customer_index: Positional row index (0-based) into shap_values / X_original.
+        shap_values: SHAP values array (n_samples, n_features) in log-odds (margin) space.
         feature_names: List of feature names (after preprocessing).
         X_original: Original feature dataframe with actual values.
         top_k: Number of top contributing features to include.
 
     Returns:
-        Dictionary with customer_id, churn_probability, and explanation text.
+        Dictionary with customer_index and explanation text.
     """
 
     customer_shap = shap_values[customer_index]
@@ -93,7 +97,7 @@ def explain_customer_churn(
         magnitude = abs(shap_value)
 
         explanation_parts.append(
-            f"{feature_name} ({direction} churn risk by {magnitude:.3f})"
+            f"{feature_name} ({direction} churn risk by {magnitude:.3f} log-odds units)"
         )
 
     explanation = "; ".join(explanation_parts)
@@ -109,7 +113,6 @@ def get_preprocessed_feature_names(model: Any, X_sample: pd.DataFrame) -> list[s
     """Extract feature names after preprocessing (including one-hot encoded categories)."""
 
     preprocessor = model.named_steps["preprocessor"]
-    X_preprocessed = preprocessor.transform(X_sample)
 
     feature_names = []
     for name, transformer, columns in preprocessor.transformers_:
@@ -125,43 +128,48 @@ def get_preprocessed_feature_names(model: Any, X_sample: pd.DataFrame) -> list[s
     return feature_names
 
 
-
-
 def generate_customer_explanations(
     model: Any,
     X_test: pd.DataFrame,
     y_test: pd.Series,
     feature_names_raw: list[str],
-    num_examples: int = 3,
+    num_examples: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Generate explanations for a sample of test customers.
+    """Generate explanations keyed by positional row index into X_test.
 
     Args:
         model: Fitted pipeline.
         X_test: Test features.
-        y_test: Test target labels.
-        feature_names_raw: List of raw feature names (before preprocessing).
-        num_examples: Number of explanations to generate.
+        y_test: Test target labels (unused when explaining all rows; kept for API).
+        feature_names_raw: Unused (preprocessed names are derived from the model).
+        num_examples: Number of top-predicted-churners to explain. None = every row.
 
     Returns:
-        List of explanation dictionaries.
+        List of explanation dictionaries with positional customer_index.
     """
 
+    del feature_names_raw  # explanations use preprocessed feature names
     explainer, shap_values = compute_shap_values(model, X_test)
+    del explainer
     feature_names = get_preprocessed_feature_names(model, X_test)
 
     churn_probs = model.predict_proba(X_test)[:, 1]
-    churners = np.where(y_test.values == 1)[0]
+    n_rows = len(X_test)
 
-    if len(churners) < num_examples:
-        selected_indices = churners
+    if num_examples is None:
+        selected_indices = np.arange(n_rows)
     else:
-        sorted_churners = churners[np.argsort(churn_probs[churners])[-num_examples:]]
-        selected_indices = sorted_churners
+        churners = np.where(y_test.values == 1)[0]
+        if len(churners) == 0:
+            selected_indices = np.argsort(churn_probs)[-num_examples:]
+        elif len(churners) < num_examples:
+            selected_indices = churners
+        else:
+            selected_indices = churners[np.argsort(churn_probs[churners])[-num_examples:]]
 
     explanations = []
     for idx in selected_indices:
-        exp = explain_customer_churn(idx, shap_values, feature_names, X_test, top_k=3)
+        exp = explain_customer_churn(int(idx), shap_values, feature_names, X_test, top_k=3)
         exp["churn_probability"] = float(churn_probs[idx])
         explanations.append(exp)
 
@@ -171,7 +179,7 @@ def generate_customer_explanations(
 def run_cli() -> None:
     """Convenience entry point for running explainability end to end."""
 
-    base_dir = Path.cwd().parent
+    base_dir = Path(__file__).resolve().parent.parent
     model_path = base_dir / "models" / "baseline_churn_model.joblib"
 
     model = load_trained_model(model_path)

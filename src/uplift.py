@@ -5,8 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import joblib
 import numpy as np
 import pandas as pd
+from scipy.stats import pearsonr
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 
@@ -33,7 +35,7 @@ def assign_synthetic_treatment(
         Binary treatment indicator series (0=control, 1=treatment/discount offered).
     """
 
-    np.random.seed(random_state)
+    rng = np.random.default_rng(random_state)
     n = len(df)
     treatment_prob = np.ones(n) * treatment_prob_baseline
 
@@ -46,7 +48,7 @@ def assign_synthetic_treatment(
         treatment_prob_month_to_month,
     )
 
-    treatment = np.random.binomial(1, treatment_prob)
+    treatment = rng.binomial(1, treatment_prob)
     return pd.Series(treatment, index=df.index)
 
 
@@ -61,21 +63,22 @@ def inject_treatment_effect(
     Args:
         churn_baseline: Baseline churn probability (control arm).
         treatment: Binary treatment indicator.
-        cate: Heterogeneous treatment effect (reduction in churn risk if treated).
+        cate: Heterogeneous treatment effect (reduction in churn risk if treated;
+            negative values mean treatment increases churn).
         random_state: Random seed.
 
     Returns:
         Tuple of (outcomes, true_cate).
     """
 
-    np.random.seed(random_state)
+    rng = np.random.default_rng(random_state)
     churn_factual = churn_baseline.copy()
 
     for i in range(len(churn_baseline)):
         if treatment[i] == 1:
-            churn_factual[i] = np.maximum(0, churn_baseline[i] - cate[i])
+            churn_factual[i] = float(np.clip(churn_baseline[i] - cate[i], 0, 1))
 
-    outcomes = np.random.binomial(1, churn_factual)
+    outcomes = rng.binomial(1, churn_factual)
     return outcomes, cate
 
 
@@ -87,11 +90,16 @@ def estimate_cate_from_baseline(
     """Estimate heterogeneous treatment effect magnitude from baseline churn risk.
 
     High baseline churn → larger potential uplift from treatment.
-    Customers with low/stable baseline → low uplift.
+    Long-tenure, low-risk customers can have a small negative CATE (backfire).
     """
 
     cate = baseline_probs * 0.3 + (1 - baseline_probs) * 0.05
-    return np.clip(cate, 0, 1)
+
+    if "tenure" in X_features.columns:
+        long_tenure_safe = (X_features["tenure"].to_numpy() > 48) & (baseline_probs < 0.15)
+        cate = np.where(long_tenure_safe, -0.03, cate)
+
+    return np.clip(cate, -0.10, 1.0)
 
 
 def fit_t_learner_cate(
@@ -109,130 +117,173 @@ def fit_t_learner_cate(
         random_state: Random seed.
 
     Returns:
-        Tuple of ((control_model, treatment_model), CATE predictions).
+        Tuple of ((control_model, treatment_model), CATE predictions on X).
     """
 
     X_numeric = X.select_dtypes(include=[np.number])
 
-    T_array = T.values
+    T_array = T.values if hasattr(T, "values") else np.asarray(T)
     control_mask = T_array == 0
     treatment_mask = T_array == 1
 
-    if control_mask.sum() > 10 and treatment_mask.sum() > 10:
-        model_0 = RandomForestRegressor(n_estimators=50, max_depth=6, random_state=random_state)
-        model_1 = RandomForestRegressor(n_estimators=50, max_depth=6, random_state=random_state)
+    model_0 = RandomForestRegressor(n_estimators=50, max_depth=6, random_state=random_state)
+    model_1 = RandomForestRegressor(n_estimators=50, max_depth=6, random_state=random_state)
 
+    if control_mask.sum() > 10 and treatment_mask.sum() > 10:
         model_0.fit(X_numeric[control_mask], Y[control_mask])
         model_1.fit(X_numeric[treatment_mask], Y[treatment_mask])
-
-        pred_0 = model_0.predict(X_numeric)
-        pred_1 = model_1.predict(X_numeric)
-        cate = pred_0 - pred_1
+        cate = predict_t_learner_cate((model_0, model_1), X)
     else:
         cate = np.zeros(len(X))
-        model_0 = RandomForestRegressor(n_estimators=50, max_depth=6, random_state=random_state)
-        model_1 = RandomForestRegressor(n_estimators=50, max_depth=6, random_state=random_state)
 
     return (model_0, model_1), cate
+
+
+def predict_t_learner_cate(
+    models: tuple[RandomForestRegressor, RandomForestRegressor],
+    X: pd.DataFrame,
+) -> np.ndarray:
+    """Predict CATE with a fitted T-learner (mu0 - mu1)."""
+
+    model_0, model_1 = models
+    X_numeric = X.select_dtypes(include=[np.number])
+    return model_0.predict(X_numeric) - model_1.predict(X_numeric)
 
 
 def segment_customers_by_cate(
     X: pd.DataFrame,
     baseline_churn: np.ndarray,
     cate: np.ndarray,
-    percentiles: tuple[float, float, float] = (33, 67, 90),
+    baseline_percentile: float = 50,
+    cate_percentile: float = 50,
 ) -> pd.Series:
-    """Segment customers into four groups based on baseline churn and CATE.
+    """Segment customers into exhaustive groups based on baseline churn and CATE.
+
+    Sleeping Dogs = negative learned CATE (treatment backfires — do not target).
+    Remaining customers form a 2x2 on high_baseline x high_cate.
 
     Args:
         X: Feature matrix.
         baseline_churn: Baseline churn probability (control arm).
         cate: Heterogeneous treatment effect.
-        percentiles: (p_low, p_mid, p_high) for segmentation thresholds.
+        baseline_percentile: Percentile cut for high vs low baseline churn.
+        cate_percentile: Percentile cut for high vs low CATE (among non-negative).
 
     Returns:
-        Segment assignment (string labels).
+        Segment assignment (string labels). Guaranteed non-null for every row.
     """
 
-    p_low, p_mid, p_high = percentiles
-    baseline_threshold = np.percentile(baseline_churn, 50)
-    cate_low_threshold = np.percentile(cate, p_low)
-    cate_high_threshold = np.percentile(cate, p_high)
-
-    segments = np.empty(len(X), dtype=object)
+    baseline_threshold = np.percentile(baseline_churn, baseline_percentile)
+    cate_threshold = np.percentile(cate, cate_percentile)
 
     high_baseline = baseline_churn >= baseline_threshold
-    low_cate = cate <= cate_low_threshold
-    high_cate = cate >= cate_high_threshold
+    high_cate = cate >= cate_threshold
+    negative_cate = cate < 0
 
-    segments[(~high_baseline) & (low_cate)] = "Sure Things"
-    segments[(high_baseline) & (low_cate)] = "Lost Causes"
-    segments[(high_baseline) & (high_cate)] = "Persuadables"
-    segments[(~high_baseline) & (~low_cate)] = "Sleeping Dogs"
+    segments = np.empty(len(X), dtype=object)
+    segments[negative_cate] = "Sleeping Dogs"
+    segments[(~negative_cate) & (~high_baseline) & (~high_cate)] = "Sure Things"
+    segments[(~negative_cate) & (high_baseline) & (~high_cate)] = "Lost Causes"
+    segments[(~negative_cate) & (high_baseline) & (high_cate)] = "Persuadables"
+    segments[(~negative_cate) & (~high_baseline) & (high_cate)] = "Low-Risk Upside"
 
+    assert not pd.isna(segments).any(), "Every customer must receive a segment label"
     return pd.Series(segments, index=X.index)
 
 
 def run_uplift_pipeline(
-    csv_path: str | Path,
-    baseline_model_path: str | Path,
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+    model: Any,
     random_state: int = 42,
 ) -> dict[str, Any]:
-    """Run the end-to-end uplift modeling pipeline.
+    """Run the uplift modeling pipeline on an already-split test set.
+
+    Further splits X_test into uplift-train / uplift-eval (70/30) so the T-learner
+    is not scored in-sample. Trade-off: with only ~1,400 test rows, this shrinks
+    segment sizes and dashboard coverage vs. fitting on the full test set.
 
     Args:
-        csv_path: Path to raw Telco CSV.
-        baseline_model_path: Path to saved baseline model.
+        X_test: Held-out feature matrix from the baseline model split.
+        y_test: Held-out labels aligned with X_test.
+        model: Fitted baseline churn pipeline.
         random_state: Random seed.
 
     Returns:
-        Dictionary with segment counts, examples, and CATE estimates.
+        Dictionary with segment counts, CATE estimates, and recovery metrics
+        for the uplift-eval subset.
     """
 
-    import joblib
-
-    featured_df = load_featured_frame(csv_path)
-    X = featured_df.drop(columns=["Churn"])
-    y = featured_df["Churn"]
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, stratify=y, random_state=random_state
-    )
-
-    model = joblib.load(baseline_model_path)
     baseline_probs_test = model.predict_proba(X_test)[:, 1]
     cate_baseline = estimate_cate_from_baseline(model, X_test, baseline_probs_test)
 
     treatment_test = assign_synthetic_treatment(X_test, random_state=random_state)
-    outcomes_test, true_cate = inject_treatment_effect(baseline_probs_test, treatment_test.values, cate_baseline, random_state=random_state)
+    outcomes_test, true_cate = inject_treatment_effect(
+        baseline_probs_test, treatment_test.values, cate_baseline, random_state=random_state
+    )
 
-    treatment_df = pd.DataFrame({"treatment": treatment_test, "outcome": outcomes_test}, index=X_test.index)
+    # Held-out eval for the causal model (avoids in-sample CATE optimism).
+    (
+        X_up_train,
+        X_up_eval,
+        treat_train,
+        treat_eval,
+        out_train,
+        out_eval,
+        base_train,
+        base_eval,
+        true_cate_train,
+        true_cate_eval,
+        y_up_train,
+        y_up_eval,
+    ) = train_test_split(
+        X_test,
+        treatment_test,
+        outcomes_test,
+        baseline_probs_test,
+        true_cate,
+        y_test,
+        test_size=0.3,
+        random_state=random_state,
+    )
 
-    t_learner_models, cate_learned = fit_t_learner_cate(X_test, treatment_test, outcomes_test, random_state=random_state)
+    t_learner_models, _ = fit_t_learner_cate(
+        X_up_train, treat_train, out_train, random_state=random_state
+    )
+    cate_learned = predict_t_learner_cate(t_learner_models, X_up_eval)
 
-    segments = segment_customers_by_cate(X_test, baseline_probs_test, cate_learned)
+    segments = segment_customers_by_cate(X_up_eval, base_eval, cate_learned)
+
+    cate_recovery_corr, _ = pearsonr(true_cate_eval, cate_learned)
+    cate_recovery_mae = float(np.mean(np.abs(true_cate_eval - cate_learned)))
 
     segment_counts = segments.value_counts()
-    results = {
+    results: dict[str, Any] = {
         "segment_counts": segment_counts,
-        "baseline_probs": baseline_probs_test,
+        "baseline_probs": base_eval,
         "cate": cate_learned,
+        "true_cate": true_cate_eval,
         "segments": segments,
-        "X_test": X_test,
-        "y_test": y_test,
+        "X_test": X_up_eval,
+        "y_test": y_up_eval,
+        "cate_recovery_corr": float(cate_recovery_corr),
+        "cate_recovery_mae": cate_recovery_mae,
+        "t_learner_models": t_learner_models,
     }
 
     segment_examples = {}
-    for seg in ["Persuadables", "Sure Things", "Lost Causes", "Sleeping Dogs"]:
+    for seg in ["Persuadables", "Sure Things", "Lost Causes", "Sleeping Dogs", "Low-Risk Upside"]:
         seg_mask = segments == seg
         if seg_mask.sum() > 0:
-            seg_indices = np.where(seg_mask)[0]
-            top_idx = seg_indices[np.argsort(cate_learned[seg_mask])[-1]]
+            seg_indices = np.where(seg_mask.values)[0]
+            top_idx = seg_indices[np.argsort(cate_learned[seg_mask.values])[-1]]
             segment_examples[seg] = {
-                "index": top_idx,
-                "baseline_churn": float(baseline_probs_test[top_idx]),
+                "index": int(top_idx),
+                "baseline_churn": float(base_eval[top_idx]),
                 "uplift": float(cate_learned[top_idx]),
-                "expected_churn_if_treated": float(max(0, baseline_probs_test[top_idx] - cate_learned[top_idx])),
+                "expected_churn_if_treated": float(
+                    np.clip(base_eval[top_idx] - cate_learned[top_idx], 0, 1)
+                ),
             }
 
     results["segment_examples"] = segment_examples
@@ -242,14 +293,24 @@ def run_uplift_pipeline(
 def run_cli() -> None:
     """Convenience entry point for uplift modeling."""
 
-    base_dir = Path.cwd().parent
-    results = run_uplift_pipeline(
-        base_dir / "WA_Fn-UseC_-Telco-Customer-Churn.csv",
-        base_dir / "models" / "baseline_churn_model.joblib",
-    )
+    base_dir = Path(__file__).resolve().parent.parent
+    csv_path = base_dir / "WA_Fn-UseC_-Telco-Customer-Churn.csv"
+    model_path = base_dir / "models" / "baseline_churn_model.joblib"
+
+    featured_df = load_featured_frame(csv_path)
+    X = featured_df.drop(columns=["Churn"])
+    y = featured_df["Churn"]
+    _, X_test, _, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
+    model = joblib.load(model_path)
+
+    results = run_uplift_pipeline(X_test, y_test, model)
 
     print("\n=== Segment Counts ===")
     print(results["segment_counts"])
+
+    print("\n=== CATE Recovery (vs synthetic ground truth) ===")
+    print(f"Correlation: {results['cate_recovery_corr']:.3f}")
+    print(f"MAE: {results['cate_recovery_mae']:.4f}")
 
     print("\n=== Segment Examples (Highest Uplift per Segment) ===")
     for seg, ex in results["segment_examples"].items():

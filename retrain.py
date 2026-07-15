@@ -19,8 +19,8 @@ def main():
         calibration_output_path=calibration_output_path,
     )
 
-    print(f"\n[✓] Model trained and saved to {model_output_path}")
-    print(f"[✓] Calibration curve saved to {calibration_output_path}")
+    print(f"\n[OK] Model trained and saved to {model_output_path}")
+    print(f"[OK] Calibration curve saved to {calibration_output_path}")
     print(f"\n[Metrics]\n{metrics}")
     print(f"\n[Classification Report]\n{artifacts['classification_report']}")
 

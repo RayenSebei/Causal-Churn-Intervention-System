@@ -22,6 +22,7 @@ MODEL_PATH = BASE_DIR / "models" / "baseline_churn_model.joblib"
 dashboard_data = load_dashboard_data(DATA_PATH, MODEL_PATH)
 df = dashboard_data["df"].reset_index(drop=True)
 roi_metrics = compute_roi_metrics(df)
+uplift_meta = dashboard_data["uplift_results"]
 
 app = dash.Dash(__name__)
 
@@ -30,6 +31,7 @@ SEGMENT_COLORS = {
     "Sure Things": "#3498db",
     "Lost Causes": "#e74c3c",
     "Sleeping Dogs": "#f39c12",
+    "Low-Risk Upside": "#9b59b6",
 }
 
 def create_kpi_card(label: str, value: str, color: str = "#3498db"):
@@ -56,27 +58,36 @@ app.layout = html.Div(
                 "Decision-support tool for retention budget allocation — not a churn classifier.",
                 style={"textAlign": "center", "color": "#666", "fontSize": "16px"}
             ),
+            html.P(
+                f"Model validity — CATE recovery correlation: {uplift_meta['cate_recovery_corr']:.2f} "
+                f"(MAE: {uplift_meta['cate_recovery_mae']:.3f})",
+                style={"textAlign": "center", "color": "#888", "fontSize": "13px", "marginTop": "6px"}
+            ),
         ], style={"marginBottom": "30px"}),
 
         html.Div([
-            html.H2("ROI Comparison: Targeted vs. Blanket Spend", style={"marginBottom": "20px", "color": "#222"}),
+            html.H2("Efficiency Comparison: Targeted vs. Blanket Spend", style={"marginBottom": "20px", "color": "#222"}),
             html.Div(
                 [
                     html.Div(
                         [
                             html.H3("Targeted Strategy", style={"color": "#2ecc71", "marginBottom": "15px"}),
                             create_kpi_card(
-                                "ROI (Churn Prevented / $)",
+                                "Churn Prevented per Discount Dollar",
                                 f"{roi_metrics['roi_targeted']:.2f}x",
                                 "#2ecc71"
                             ),
                             html.Div(style={"marginTop": "10px", "fontSize": "12px", "color": "#666"}),
                             html.P(
-                                f"Target Persuadables + Sleeping Dogs: {roi_metrics['customers_targeted']} customers",
+                                f"Target Persuadables + Low-Risk Upside: {roi_metrics['customers_targeted']} customers",
                                 style={"fontSize": "13px", "color": "#666", "marginTop": "8px"}
                             ),
                             html.P(
                                 f"Cost: ${roi_metrics['cost_targeted']:.0f}",
+                                style={"fontSize": "13px", "color": "#666"}
+                            ),
+                            html.P(
+                                f"Expected retained monthly revenue: ${roi_metrics['retained_revenue_targeted']:.0f}",
                                 style={"fontSize": "13px", "color": "#666"}
                             ),
                         ],
@@ -86,7 +97,7 @@ app.layout = html.Div(
                         [
                             html.H3("Blanket Strategy", style={"color": "#e74c3c", "marginBottom": "15px"}),
                             create_kpi_card(
-                                "ROI (Churn Prevented / $)",
+                                "Churn Prevented per Discount Dollar",
                                 f"{roi_metrics['roi_blanket']:.2f}x",
                                 "#e74c3c"
                             ),
@@ -99,6 +110,10 @@ app.layout = html.Div(
                                 f"Cost: ${roi_metrics['cost_blanket']:.0f}",
                                 style={"fontSize": "13px", "color": "#666"}
                             ),
+                            html.P(
+                                f"Expected retained monthly revenue: ${roi_metrics['retained_revenue_blanket']:.0f}",
+                                style={"fontSize": "13px", "color": "#666"}
+                            ),
                         ],
                         style={"flex": "1"}
                     ),
@@ -108,7 +123,7 @@ app.layout = html.Div(
             html.Div(
                 [
                     html.H3(
-                        f"Targeted ROI is {roi_metrics['roi_improvement']:.1%} better",
+                        f"Targeted efficiency is {roi_metrics['roi_improvement']:.1%} better",
                         style={"color": "#2ecc71", "marginTop": "25px", "textAlign": "center"}
                     ),
                 ],
@@ -126,7 +141,8 @@ app.layout = html.Div(
                         options=[
                             {"label": "All Segments", "value": "all"},
                             {"label": "Persuadables", "value": "Persuadables"},
-                            {"label": "Sleeping Dogs", "value": "Sleeping Dogs"},
+                            {"label": "Low-Risk Upside", "value": "Low-Risk Upside"},
+                            {"label": "Sleeping Dogs (do not target)", "value": "Sleeping Dogs"},
                             {"label": "Sure Things", "value": "Sure Things"},
                             {"label": "Lost Causes", "value": "Lost Causes"},
                         ],
@@ -197,7 +213,7 @@ def update_customer_table(segment_filter, contract_filter):
     ].copy()
     display_df.columns = ["Churn Prob", "Uplift", "Expected Churn (Treated)", "Segment", "Contract", "Tenure", "Monthly $"]
     display_df["Churn Prob"] = display_df["Churn Prob"].apply(lambda x: f"{x:.1%}")
-    display_df["Uplift"] = display_df["Uplift"].apply(lambda x: f"{x:.1%}")
+    display_df["Uplift"] = display_df["Uplift"].apply(lambda x: f"{x:+.1%}")
     display_df["Expected Churn (Treated)"] = display_df["Expected Churn (Treated)"].apply(lambda x: f"{x:.1%}")
     display_df["Tenure"] = display_df["Tenure"].astype(int)
     display_df["Monthly $"] = display_df["Monthly $"].apply(lambda x: f"${x:.0f}")
@@ -231,7 +247,7 @@ def update_segment_chart(segment_filter):
         go.Bar(
             x=segment_counts.index,
             y=segment_counts.values,
-            marker=dict(color=[SEGMENT_COLORS[seg] for seg in segment_counts.index]),
+            marker=dict(color=[SEGMENT_COLORS.get(seg, "#95a5a6") for seg in segment_counts.index]),
             text=segment_counts.values,
             textposition="auto",
         )
@@ -266,7 +282,7 @@ def update_churn_chart(contract_filter):
     Input("segment-filter", "value"),
 )
 def update_customer_selector(segment_filter):
-    """Update customer selector options."""
+    """Update customer selector options using full-df index labels (not filtered positions)."""
     if segment_filter != "all":
         selector_df = df[df["segment"] == segment_filter]
     else:
@@ -274,12 +290,13 @@ def update_customer_selector(segment_filter):
 
     options = [
         {
-            "label": f"Customer {i}: {seg} ({churn:.1%} churn, +{uplift:.1%} uplift)",
-            "value": i
+            "label": (
+                f"Customer {idx}: {row.segment} "
+                f"({row.churn_probability:.1%} churn, {row.uplift:+.1%} uplift)"
+            ),
+            "value": idx,
         }
-        for i, (seg, churn, uplift) in enumerate(
-            zip(selector_df["segment"], selector_df["churn_probability"], selector_df["uplift"])
-        )
+        for idx, row in selector_df.iterrows()
     ]
     return options
 
@@ -293,14 +310,14 @@ def update_customer_detail(customer_idx):
     if customer_idx is None:
         return html.Div("Select a customer to view details.")
 
-    customer = df.iloc[customer_idx]
+    customer = df.loc[customer_idx]
     return html.Div([
         html.H3(f"Customer Index: {customer_idx}", style={"marginBottom": "15px"}),
         html.Div([
             html.Div([
                 html.P(f"Baseline Churn Prob: {customer['churn_probability']:.2%}", style={"fontSize": "16px"}),
                 html.P(f"Segment: {customer['segment']}", style={"fontSize": "16px", "color": SEGMENT_COLORS.get(customer['segment'], "#000")}),
-                html.P(f"Estimated Uplift: {customer['uplift']:.2%}", style={"fontSize": "16px"}),
+                html.P(f"Estimated Uplift: {customer['uplift']:+.2%}", style={"fontSize": "16px"}),
                 html.P(f"Expected Churn if Treated: {customer['expected_churn_if_treated']:.2%}", style={"fontSize": "16px"}),
             ], style={"flex": "1"}),
             html.Div([
