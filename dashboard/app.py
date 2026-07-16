@@ -16,6 +16,11 @@ from dashboard.layout import build_layout
 from dashboard.metrics import compute_roi_metrics
 from src.config import paths
 from src.dashboard_data import load_dashboard_data
+from src.logging_config import get_logger
+from src.validation import validate_dashboard_frame
+from src.config import causal as causal_config
+
+logger = get_logger(__name__)
 
 DATA_PATH = paths.raw_csv
 MODEL_PATH = paths.baseline_model
@@ -24,6 +29,20 @@ dashboard_data = load_dashboard_data(DATA_PATH, MODEL_PATH)
 df = dashboard_data["df"].reset_index(drop=True)
 roi_metrics = compute_roi_metrics(df)
 uplift_meta = dashboard_data["uplift_results"]
+
+validation_report = dashboard_data.get("validation_report") or validate_dashboard_frame(
+    df,
+    min_cate=causal_config.cate_clip_min,
+    max_cate=causal_config.cate_clip_max,
+    roi_metrics=roi_metrics,
+)
+if not validation_report["ok"]:
+    logger.warning("Dashboard started with validation issues: %s", validation_report["issues"])
+else:
+    logger.info(
+        "Dashboard validation OK — segments=%s",
+        validation_report.get("segment_summary"),
+    )
 
 app = dash.Dash(__name__)
 app.layout = build_layout(df, roi_metrics, uplift_meta)

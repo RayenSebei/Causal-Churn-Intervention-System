@@ -8,7 +8,17 @@ import pandas as pd
 from dash import dcc, html
 
 from dashboard.metrics import create_kpi_card
-from src.constants import ALL_SEGMENTS, SEGMENT_LOW_RISK_UPSIDE, SEGMENT_PERSUADABLES, SEGMENT_SLEEPING_DOGS
+from src.constants import ALL_SEGMENTS, SEGMENT_SLEEPING_DOGS
+
+
+def _fmt_money(value: float) -> str:
+    if value == float("inf"):
+        return "n/a"
+    return f"${value:,.0f}"
+
+
+def _fmt_pct(value: float) -> str:
+    return f"{value:,.1f}%"
 
 
 def build_layout(
@@ -18,15 +28,15 @@ def build_layout(
 ) -> html.Div:
     """Construct the full dashboard layout."""
 
-    segment_options = [
-        {"label": "All Segments", "value": "all"},
-        {"label": SEGMENT_PERSUADABLES, "value": SEGMENT_PERSUADABLES},
-        {"label": SEGMENT_LOW_RISK_UPSIDE, "value": SEGMENT_LOW_RISK_UPSIDE},
-        {"label": f"{SEGMENT_SLEEPING_DOGS} (do not target)", "value": SEGMENT_SLEEPING_DOGS},
+    segment_options = [{"label": "All Segments", "value": "all"}] + [
+        {
+            "label": (
+                f"{seg} (do not target)" if seg == SEGMENT_SLEEPING_DOGS else seg
+            ),
+            "value": seg,
+        }
+        for seg in ALL_SEGMENTS
     ]
-    for seg in ALL_SEGMENTS:
-        if seg not in {SEGMENT_PERSUADABLES, SEGMENT_LOW_RISK_UPSIDE, SEGMENT_SLEEPING_DOGS}:
-            segment_options.append({"label": seg, "value": seg})
 
     return html.Div(
         [
@@ -56,7 +66,7 @@ def build_layout(
             html.Div(
                 [
                     html.H2(
-                        "Efficiency Comparison: Targeted vs. Blanket Spend",
+                        "Campaign Economics: Targeted vs. Blanket Spend",
                         style={"marginBottom": "20px", "color": "#222"},
                     ),
                     html.Div(
@@ -64,27 +74,55 @@ def build_layout(
                             html.Div(
                                 [
                                     html.H3(
-                                        "Targeted Strategy",
+                                        "Targeted Strategy (Persuadables)",
                                         style={"color": "#2ecc71", "marginBottom": "15px"},
                                     ),
-                                    create_kpi_card(
-                                        "Churn Prevented per Discount Dollar",
-                                        f"{roi_metrics['roi_targeted']:.2f}x",
-                                        "#2ecc71",
+                                    html.Div(
+                                        [
+                                            create_kpi_card(
+                                                "Expected Revenue Saved",
+                                                _fmt_money(
+                                                    roi_metrics["expected_revenue_saved_targeted"]
+                                                ),
+                                                "#2ecc71",
+                                            ),
+                                            create_kpi_card(
+                                                "Campaign Cost",
+                                                _fmt_money(roi_metrics["campaign_cost_targeted"]),
+                                                "#27ae60",
+                                            ),
+                                            create_kpi_card(
+                                                "Net Profit",
+                                                _fmt_money(roi_metrics["net_profit_targeted"]),
+                                                "#1abc9c",
+                                            ),
+                                            create_kpi_card(
+                                                "ROI %",
+                                                _fmt_pct(roi_metrics["roi_pct_targeted"]),
+                                                "#16a085",
+                                            ),
+                                        ],
+                                        style={
+                                            "display": "grid",
+                                            "gridTemplateColumns": "1fr 1fr",
+                                            "gap": "10px",
+                                        },
                                     ),
                                     html.P(
-                                        f"Target Persuadables + Low-Risk Upside: "
-                                        f"{roi_metrics['customers_targeted']} customers",
-                                        style={"fontSize": "13px", "color": "#666", "marginTop": "8px"},
+                                        f"Customers targeted: {int(roi_metrics['customers_targeted'])} "
+                                        f"| Expected retained: "
+                                        f"{roi_metrics['expected_customers_retained_targeted']:.1f}",
+                                        style={"fontSize": "13px", "color": "#666", "marginTop": "12px"},
                                     ),
                                     html.P(
-                                        f"Cost: ${roi_metrics['cost_targeted']:.0f}",
+                                        f"Cost per retained customer: "
+                                        f"{_fmt_money(roi_metrics['cost_per_retained_customer_targeted'])}",
                                         style={"fontSize": "13px", "color": "#666"},
                                     ),
                                     html.P(
-                                        f"Expected retained monthly revenue: "
-                                        f"${roi_metrics['retained_revenue_targeted']:.0f}",
-                                        style={"fontSize": "13px", "color": "#666"},
+                                        f"Legacy efficiency (churn prevented / $): "
+                                        f"{roi_metrics['roi_targeted']:.3f}x",
+                                        style={"fontSize": "12px", "color": "#999", "marginTop": "6px"},
                                     ),
                                 ],
                                 style={"flex": "1", "marginRight": "20px"},
@@ -95,23 +133,52 @@ def build_layout(
                                         "Blanket Strategy",
                                         style={"color": "#e74c3c", "marginBottom": "15px"},
                                     ),
-                                    create_kpi_card(
-                                        "Churn Prevented per Discount Dollar",
-                                        f"{roi_metrics['roi_blanket']:.2f}x",
-                                        "#e74c3c",
+                                    html.Div(
+                                        [
+                                            create_kpi_card(
+                                                "Expected Revenue Saved",
+                                                _fmt_money(
+                                                    roi_metrics["expected_revenue_saved_blanket"]
+                                                ),
+                                                "#e74c3c",
+                                            ),
+                                            create_kpi_card(
+                                                "Campaign Cost",
+                                                _fmt_money(roi_metrics["campaign_cost_blanket"]),
+                                                "#c0392b",
+                                            ),
+                                            create_kpi_card(
+                                                "Net Profit",
+                                                _fmt_money(roi_metrics["net_profit_blanket"]),
+                                                "#d35400",
+                                            ),
+                                            create_kpi_card(
+                                                "ROI %",
+                                                _fmt_pct(roi_metrics["roi_pct_blanket"]),
+                                                "#e67e22",
+                                            ),
+                                        ],
+                                        style={
+                                            "display": "grid",
+                                            "gridTemplateColumns": "1fr 1fr",
+                                            "gap": "10px",
+                                        },
                                     ),
                                     html.P(
-                                        f"Discount everyone: {roi_metrics['customers_blanket']} customers",
-                                        style={"fontSize": "13px", "color": "#666", "marginTop": "8px"},
+                                        f"Customers targeted: {int(roi_metrics['customers_blanket'])} "
+                                        f"| Expected retained: "
+                                        f"{roi_metrics['expected_customers_retained_blanket']:.1f}",
+                                        style={"fontSize": "13px", "color": "#666", "marginTop": "12px"},
                                     ),
                                     html.P(
-                                        f"Cost: ${roi_metrics['cost_blanket']:.0f}",
+                                        f"Cost per retained customer: "
+                                        f"{_fmt_money(roi_metrics['cost_per_retained_customer_blanket'])}",
                                         style={"fontSize": "13px", "color": "#666"},
                                     ),
                                     html.P(
-                                        f"Expected retained monthly revenue: "
-                                        f"${roi_metrics['retained_revenue_blanket']:.0f}",
-                                        style={"fontSize": "13px", "color": "#666"},
+                                        f"Legacy efficiency (churn prevented / $): "
+                                        f"{roi_metrics['roi_blanket']:.3f}x",
+                                        style={"fontSize": "12px", "color": "#999", "marginTop": "6px"},
                                     ),
                                 ],
                                 style={"flex": "1"},
@@ -122,7 +189,8 @@ def build_layout(
                     html.Div(
                         [
                             html.H3(
-                                f"Targeted efficiency is {roi_metrics['roi_improvement']:.1%} better",
+                                f"Targeted efficiency is {roi_metrics['roi_improvement']:.1%} better "
+                                f"(legacy churn-prevented / $ metric)",
                                 style={"color": "#2ecc71", "marginTop": "25px", "textAlign": "center"},
                             ),
                         ],
@@ -166,8 +234,10 @@ def build_layout(
                                         id="contract-filter",
                                         options=[{"label": "All Contracts", "value": "all"}]
                                         + [
-                                            {"label": contract, "value": contract}
-                                            for contract in sorted(df["Contract"].astype(str).unique())
+                                            {"label": str(contract), "value": contract}
+                                            for contract in sorted(
+                                                df["Contract"].dropna().astype(str).unique()
+                                            )
                                         ],
                                         value="all",
                                         style={"width": "100%"},

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -11,20 +12,26 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 
 from src.causal import run_uplift_pipeline
-from src.constants import TARGET_COLUMN
+from src.config import causal as causal_config
+from src.constants import CUSTOMER_ID_COLUMN, TARGET_COLUMN
 from src.explainability import generate_customer_explanations
+from src.logging_config import get_logger
 from src.training import load_featured_frame
+from src.validation import (
+    clip_probability,
+    normalize_segment_labels,
+    treated_churn_probability,
+    validate_dashboard_frame,
+)
+
+logger = get_logger(__name__)
 
 
-def load_dashboard_data(
-    csv_path: str | Path,
-    baseline_model_path: str | Path,
+def _build_dashboard_frame(
+    csv_path: str,
+    baseline_model_path: str,
 ) -> dict[str, Any]:
-    """Load and integrate all model outputs for the dashboard.
-
-    Splits once, then passes the same X_test/y_test/model into uplift and
-    explanations so row alignment cannot silently desync.
-    """
+    """Heavy pipeline used by the cached loader."""
 
     featured_df = load_featured_frame(csv_path)
     X = featured_df.drop(columns=[TARGET_COLUMN])
@@ -37,30 +44,49 @@ def load_dashboard_data(
 
     X_dash = uplift_results["X_test"]
     y_dash = uplift_results["y_test"]
-    baseline_probs = uplift_results["baseline_probs"]
-    cate = uplift_results["cate"]
-    segments = uplift_results["segments"]
+    baseline_probs = clip_probability(uplift_results["baseline_probs"])
+    cate = np.clip(
+        np.asarray(uplift_results["cate"], dtype=float),
+        causal_config.cate_clip_min,
+        causal_config.cate_clip_max,
+    )
+    segments = normalize_segment_labels(pd.Series(uplift_results["segments"]).reset_index(drop=True))
 
     feature_names = list(X_dash.columns)
+    X_dash_reset = X_dash.reset_index(drop=True)
+    y_dash_reset = pd.Series(np.asarray(y_dash), index=X_dash_reset.index)
+
     explanations = generate_customer_explanations(
-        model, X_dash, y_dash, feature_names, num_examples=None
+        model, X_dash_reset, y_dash_reset, feature_names, num_examples=None
     )
-    explanation_map = {exp["customer_index"]: exp["explanation"] for exp in explanations}
+    explanation_map = {int(exp["customer_index"]): exp["explanation"] for exp in explanations}
 
-    df_dashboard = X_dash.reset_index(drop=True).copy()
+    # Positional alignment: explanations are keyed by row position after reset.
+    expected_positions = set(range(len(X_dash_reset)))
+    actual_positions = set(explanation_map)
+    if expected_positions != actual_positions:
+        missing = sorted(expected_positions - actual_positions)
+        raise AssertionError(
+            f"SHAP explanation index mismatch; missing {len(missing)} positions "
+            f"(examples: {missing[:5]})"
+        )
+
+    df_dashboard = X_dash_reset.copy()
     df_dashboard["churn_probability"] = baseline_probs
-    df_dashboard["segment"] = segments.values
+    df_dashboard["segment"] = segments.to_numpy()
     df_dashboard["uplift"] = cate
-    df_dashboard["expected_churn_if_treated"] = np.clip(baseline_probs - cate, 0, 1)
-    df_dashboard["shap_explanation"] = df_dashboard.index.map(
-        lambda pos: explanation_map.get(pos, "No explanation available")
-    )
-    df_dashboard["y_actual"] = y_dash.values
+    df_dashboard["expected_churn_if_treated"] = treated_churn_probability(baseline_probs, cate)
+    df_dashboard["shap_explanation"] = [
+        explanation_map[pos] for pos in range(len(df_dashboard))
+    ]
+    df_dashboard["y_actual"] = y_dash_reset.to_numpy()
 
-    missing_rate = float(df_dashboard["shap_explanation"].eq("No explanation available").mean())
-    assert missing_rate < 0.01, (
-        f"SHAP explanations missing for {missing_rate:.1%} of rows (expected ~0)"
-    )
+    if CUSTOMER_ID_COLUMN not in df_dashboard.columns:
+        df_dashboard[CUSTOMER_ID_COLUMN] = [f"CUST-{i:04d}" for i in range(len(df_dashboard))]
+    else:
+        df_dashboard[CUSTOMER_ID_COLUMN] = (
+            df_dashboard[CUSTOMER_ID_COLUMN].astype(str).fillna("UNKNOWN")
+        )
 
     return {
         "df": df_dashboard,
@@ -68,3 +94,76 @@ def load_dashboard_data(
         "uplift_results": uplift_results,
         "model": model,
     }
+
+
+@lru_cache(maxsize=4)
+def _load_dashboard_data_cached(csv_path: str, baseline_model_path: str) -> dict[str, Any]:
+    """Cache predictions / SHAP / segments for repeated dashboard launches."""
+
+    logger.info("Building dashboard data cache for %s", csv_path)
+    return _build_dashboard_frame(csv_path, baseline_model_path)
+
+
+def load_dashboard_data(
+    csv_path: str | Path,
+    baseline_model_path: str | Path,
+    *,
+    use_cache: bool = True,
+) -> dict[str, Any]:
+    """Load and integrate all model outputs for the dashboard.
+
+    Splits once, then passes the same X_test/y_test/model into uplift and
+    explanations so row alignment cannot silently desync.
+
+    Results are cached by absolute path (predictions, SHAP, segments, ROI inputs)
+    so repeated dashboard starts avoid full recomputation.
+    """
+
+    csv_key = str(Path(csv_path).resolve())
+    model_key = str(Path(baseline_model_path).resolve())
+
+    if use_cache:
+        payload = _load_dashboard_data_cached(csv_key, model_key)
+    else:
+        payload = _build_dashboard_frame(csv_key, model_key)
+
+    # Defensive copy so callers cannot mutate the cached frame.
+    df = payload["df"].copy()
+    uplift_results = dict(payload["uplift_results"])
+
+    report = validate_dashboard_frame(
+        df,
+        min_cate=causal_config.cate_clip_min,
+        max_cate=causal_config.cate_clip_max,
+    )
+    if not report["ok"]:
+        # Auto-repair probabilities / segments then re-validate once.
+        df["churn_probability"] = clip_probability(df["churn_probability"])
+        df["uplift"] = np.clip(
+            df["uplift"].to_numpy(dtype=float),
+            causal_config.cate_clip_min,
+            causal_config.cate_clip_max,
+        )
+        df["expected_churn_if_treated"] = treated_churn_probability(
+            df["churn_probability"], df["uplift"]
+        )
+        df["segment"] = normalize_segment_labels(df["segment"])
+        report = validate_dashboard_frame(
+            df,
+            min_cate=causal_config.cate_clip_min,
+            max_cate=causal_config.cate_clip_max,
+        )
+
+    return {
+        "df": df,
+        "baseline_probs": clip_probability(payload["baseline_probs"]),
+        "uplift_results": uplift_results,
+        "model": payload["model"],
+        "validation_report": report,
+    }
+
+
+def clear_dashboard_cache() -> None:
+    """Clear the in-process dashboard data cache."""
+
+    _load_dashboard_data_cached.cache_clear()

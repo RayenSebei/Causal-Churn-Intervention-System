@@ -15,6 +15,7 @@ from src.causal.policy import segment_customers_by_cate
 from src.causal.treatment import TreatmentPolicy, assign_synthetic_treatment
 from src.config import causal as causal_config
 from src.constants import ALL_SEGMENTS
+from src.validation import clip_probability, summarize_segment_distribution, treated_churn_probability
 
 
 @dataclass(frozen=True)
@@ -22,13 +23,13 @@ class SimulationConfig:
     """Configuration for the synthetic outcome generation process."""
 
     random_state: int = 42
-    high_risk_multiplier: float = 0.30
-    low_risk_floor: float = 0.05
+    high_risk_multiplier: float = 0.25
+    low_risk_floor: float = 0.03
     backfire_effect: float = -0.03
     backfire_tenure_threshold: int = 48
     backfire_churn_threshold: float = 0.15
-    cate_clip_min: float = -0.10
-    cate_clip_max: float = 1.00
+    cate_clip_min: float = -0.20
+    cate_clip_max: float = 0.30
 
 
 def _default_simulation_config(random_state: int | None = None) -> SimulationConfig:
@@ -54,17 +55,24 @@ def inject_treatment_effect(
     *,
     random_state: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Generate observed outcomes from baseline risk and synthetic treatment effect."""
+    """Generate observed outcomes from baseline risk and synthetic treatment effect.
+
+    Assumptions
+    -----------
+    - ``cate`` is a probability-point change in churn (positive = retention benefit).
+    - Treated churn probability is ``clip(baseline - cate, 0, 1)``.
+    - Outcomes are Bernoulli draws from the factual probability.
+    """
 
     config = config or _default_simulation_config(random_state)
     rng = np.random.default_rng(config.random_state)
 
-    churn_baseline = np.asarray(churn_baseline, dtype=float)
+    churn_baseline = clip_probability(churn_baseline)
     treatment = np.asarray(treatment)
-    cate = np.asarray(cate, dtype=float)
+    cate = np.clip(np.asarray(cate, dtype=float), config.cate_clip_min, config.cate_clip_max)
 
     treated = treatment == 1
-    churn_factual = np.where(treated, np.clip(churn_baseline - cate, 0.0, 1.0), churn_baseline)
+    churn_factual = np.where(treated, treated_churn_probability(churn_baseline, cate), churn_baseline)
     outcomes = rng.binomial(1, churn_factual)
     return outcomes, cate
 
@@ -79,11 +87,12 @@ def estimate_cate_from_baseline(
 
     High baseline churn → larger potential uplift from treatment.
     Long-tenure, low-risk customers can have a small negative CATE (backfire).
+    Effects are clipped to ``[cate_clip_min, cate_clip_max]`` for realism.
     """
 
     del model  # reserved for future model-aware effect schedules
     config = config or _default_simulation_config()
-    baseline_probs = np.asarray(baseline_probs, dtype=float)
+    baseline_probs = clip_probability(baseline_probs)
     cate = (
         baseline_probs * config.high_risk_multiplier
         + (1.0 - baseline_probs) * config.low_risk_floor
@@ -115,7 +124,7 @@ def run_uplift_pipeline(
     seed = causal_config.random_state if random_state is None else random_state
     sim_config = _default_simulation_config(seed)
 
-    baseline_probs_test = model.predict_proba(X_test)[:, 1]
+    baseline_probs_test = clip_probability(model.predict_proba(X_test)[:, 1])
     cate_baseline = estimate_cate_from_baseline(model, X_test, baseline_probs_test, sim_config)
 
     treatment_policy = TreatmentPolicy(
@@ -165,6 +174,9 @@ def run_uplift_pipeline(
         X_up_train, treat_train, out_train, config=learner_config
     )
     cate_learned = predict_t_learner_cate(t_learner_models, X_up_eval)
+    cate_learned = np.clip(cate_learned, sim_config.cate_clip_min, sim_config.cate_clip_max)
+
+    base_eval = clip_probability(base_eval)
     segments = segment_customers_by_cate(
         X_up_eval,
         base_eval,
@@ -172,12 +184,14 @@ def run_uplift_pipeline(
         baseline_percentile=causal_config.baseline_percentile,
         cate_percentile=causal_config.cate_percentile,
     )
+    segment_summary = summarize_segment_distribution(segments)
 
     cate_recovery_corr, _ = pearsonr(true_cate_eval, cate_learned)
     cate_recovery_mae = float(np.mean(np.abs(true_cate_eval - cate_learned)))
 
     results: dict[str, Any] = {
         "segment_counts": segments.value_counts(),
+        "segment_summary": segment_summary,
         "baseline_probs": base_eval,
         "cate": cate_learned,
         "true_cate": true_cate_eval,
@@ -187,6 +201,7 @@ def run_uplift_pipeline(
         "cate_recovery_corr": float(cate_recovery_corr),
         "cate_recovery_mae": cate_recovery_mae,
         "t_learner_models": t_learner_models,
+        "cate_bounds": (sim_config.cate_clip_min, sim_config.cate_clip_max),
     }
 
     segment_examples: dict[str, dict[str, float | int]] = {}
@@ -200,7 +215,7 @@ def run_uplift_pipeline(
                 "baseline_churn": float(base_eval[top_idx]),
                 "uplift": float(cate_learned[top_idx]),
                 "expected_churn_if_treated": float(
-                    np.clip(base_eval[top_idx] - cate_learned[top_idx], 0, 1)
+                    treated_churn_probability(base_eval[top_idx], cate_learned[top_idx]).item()
                 ),
             }
 

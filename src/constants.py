@@ -39,7 +39,6 @@ SERVICE_COLUMNS: list[str] = [
     "StreamingMovies",
 ]
 
-# All service-related columns (for feature engineering)
 ALL_SERVICE_COLUMNS: list[str] = [
     "PhoneService",
     "MultipleLines",
@@ -52,20 +51,12 @@ ALL_SERVICE_COLUMNS: list[str] = [
     "StreamingMovies",
 ]
 
-# ---------------------------------------------------------------------------
-# Categorical columns (for one-hot encoding)
-# ---------------------------------------------------------------------------
-
 UNORDERED_CATEGORICAL_COLUMNS: list[str] = [
     "gender",
     "InternetService",
     "Contract",
     "PaymentMethod",
 ]
-
-# ---------------------------------------------------------------------------
-# Numeric columns
-# ---------------------------------------------------------------------------
 
 NUMERIC_RAW_COLUMNS: list[str] = [
     "SeniorCitizen",
@@ -74,21 +65,20 @@ NUMERIC_RAW_COLUMNS: list[str] = [
     "TotalCharges",
 ]
 
-# ---------------------------------------------------------------------------
-# Tenure bucketing
-# ---------------------------------------------------------------------------
-
 TENURE_BIN_EDGES: list[int] = [-1, 6, 12, 24, 48, 72]
 TENURE_BIN_LABELS: list[str] = ["0-6", "7-12", "13-24", "25-48", "49-72"]
 
 # ---------------------------------------------------------------------------
-# Customer segments (causal/uplift)
+# Customer segments (canonical 4-way uplift taxonomy)
 # ---------------------------------------------------------------------------
 
 SEGMENT_PERSUADABLES: str = "Persuadables"
 SEGMENT_SURE_THINGS: str = "Sure Things"
 SEGMENT_LOST_CAUSES: str = "Lost Causes"
 SEGMENT_SLEEPING_DOGS: str = "Sleeping Dogs"
+
+# Legacy alias kept for backward compatibility with older dashboards / docs.
+# New segmentation maps this cohort into Persuadables (positive uplift).
 SEGMENT_LOW_RISK_UPSIDE: str = "Low-Risk Upside"
 
 ALL_SEGMENTS: list[str] = [
@@ -96,29 +86,25 @@ ALL_SEGMENTS: list[str] = [
     SEGMENT_SURE_THINGS,
     SEGMENT_LOST_CAUSES,
     SEGMENT_SLEEPING_DOGS,
-    SEGMENT_LOW_RISK_UPSIDE,
 ]
 
 TARGET_SEGMENTS: list[str] = [
     SEGMENT_PERSUADABLES,
-    SEGMENT_LOW_RISK_UPSIDE,
 ]
 
-# ---------------------------------------------------------------------------
-# Segment display colours (dashboard)
-# ---------------------------------------------------------------------------
+LEGACY_SEGMENT_ALIASES: dict[str, str] = {
+    SEGMENT_LOW_RISK_UPSIDE: SEGMENT_PERSUADABLES,
+}
 
 SEGMENT_COLORS: dict[str, str] = {
     SEGMENT_PERSUADABLES: "#2ecc71",
     SEGMENT_SURE_THINGS: "#3498db",
     SEGMENT_LOST_CAUSES: "#e74c3c",
     SEGMENT_SLEEPING_DOGS: "#f39c12",
-    SEGMENT_LOW_RISK_UPSIDE: "#9b59b6",
+    SEGMENT_LOW_RISK_UPSIDE: "#2ecc71",  # alias colour → Persuadables
 }
 
-# ---------------------------------------------------------------------------
-# Service-value mappings used during cleaning
-# ---------------------------------------------------------------------------
+FALLBACK_SEGMENT: str = SEGMENT_SURE_THINGS
 
 SERVICE_NO_MAPPINGS: dict[str, str] = {
     "No phone service": "No service",
@@ -126,9 +112,5 @@ SERVICE_NO_MAPPINGS: dict[str, str] = {
 }
 
 BINARY_YES_NO_MAP: dict[str, int] = {"Yes": 1, "No": 0}
-
-# ---------------------------------------------------------------------------
-# Raw data file name
-# ---------------------------------------------------------------------------
 
 RAW_DATA_FILENAME: str = "WA_Fn-UseC_-Telco-Customer-Churn.csv"

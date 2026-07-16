@@ -95,14 +95,17 @@ class CausalConfig:
     treatment_prob_month_to_month: float = 0.70
     treatment_prob_baseline: float = 0.30
 
-    # Simulation effect magnitudes
-    high_risk_effect_multiplier: float = 0.30
-    low_risk_effect_floor: float = 0.05
+    # Simulation effect magnitudes (probability-point effects).
+    # Rationale: real retention offers rarely move churn by more than ~20–30pp;
+    # unbounded T-learner outputs (60–90% "uplift") are estimation artefacts.
+    high_risk_effect_multiplier: float = 0.25
+    low_risk_effect_floor: float = 0.03
     backfire_effect: float = -0.03
     backfire_tenure_threshold: int = 48
     backfire_churn_threshold: float = 0.15
-    cate_clip_min: float = -0.10
-    cate_clip_max: float = 1.00
+    # Learned / synthetic CATE bounds (MIN_CATE / MAX_CATE)
+    cate_clip_min: float = -0.20
+    cate_clip_max: float = 0.30
 
     # T-learner / X-learner base estimator
     learner_n_estimators: int = 100

@@ -62,9 +62,13 @@ def fit_t_learner_cate(
         cate = np.zeros(len(X_numeric), dtype=float)
         return (model_control, model_treated), cate
 
-    model_control.fit(X_numeric.loc[control_mask], outcomes[control_mask])
-    model_treated.fit(X_numeric.loc[treatment_mask], outcomes[treatment_mask])
-    cate = predict_t_learner_cate((model_control, model_treated), X_numeric)
+    # Use positional iloc indexing to avoid label-alignment bugs after splits
+    # while preserving DataFrame feature names for sklearn.
+    control_idx = np.flatnonzero(control_mask)
+    treatment_idx = np.flatnonzero(treatment_mask)
+    model_control.fit(X_numeric.iloc[control_idx], outcomes[control_mask])
+    model_treated.fit(X_numeric.iloc[treatment_idx], outcomes[treatment_mask])
+    cate = predict_t_learner_cate((model_control, model_treated), X)
     return (model_control, model_treated), cate
 
 
@@ -72,11 +76,14 @@ def predict_t_learner_cate(
     models: tuple[RandomForestRegressor, RandomForestRegressor],
     X: pd.DataFrame,
 ) -> np.ndarray:
-    """Predict CATE with a fitted T-learner."""
+    """Predict CATE with a fitted T-learner, clipped to configured bounds."""
+
+    from src.config import causal as causal_config
 
     model_control, model_treated = models
     X_numeric = _feature_matrix(X)
-    return model_control.predict(X_numeric) - model_treated.predict(X_numeric)
+    raw = model_control.predict(X_numeric) - model_treated.predict(X_numeric)
+    return np.clip(raw, causal_config.cate_clip_min, causal_config.cate_clip_max)
 
 
 def fit_s_learner_cate(
@@ -103,18 +110,23 @@ def fit_s_learner_cate(
     X_control = X_numeric.copy()
     X_control["treatment"] = 0.0
     cate = model.predict(X_treated) - model.predict(X_control)
-    return model, cate
+    from src.config import causal as causal_config
+
+    return model, np.clip(cate, causal_config.cate_clip_min, causal_config.cate_clip_max)
 
 
 def predict_s_learner_cate(model: Any, X: pd.DataFrame) -> np.ndarray:
     """Predict CATE using an S-learner with treatment toggled on/off."""
+
+    from src.config import causal as causal_config
 
     X_numeric = _feature_matrix(X).copy()
     X_treated = X_numeric.copy()
     X_treated["treatment"] = 1.0
     X_control = X_numeric.copy()
     X_control["treatment"] = 0.0
-    return model.predict(X_treated) - model.predict(X_control)
+    raw = model.predict(X_treated) - model.predict(X_control)
+    return np.clip(raw, causal_config.cate_clip_min, causal_config.cate_clip_max)
 
 
 def fit_x_learner_cate(
@@ -141,11 +153,13 @@ def fit_x_learner_cate(
         max_depth=config.max_depth,
         random_state=config.random_state,
     )
-    mu0.fit(X_numeric.loc[control_mask], outcomes[control_mask])
-    mu1.fit(X_numeric.loc[treated_mask], outcomes[treated_mask])
+    control_idx = np.flatnonzero(control_mask)
+    treated_idx = np.flatnonzero(treated_mask)
+    mu0.fit(X_numeric.iloc[control_idx], outcomes[control_mask])
+    mu1.fit(X_numeric.iloc[treated_idx], outcomes[treated_mask])
 
-    tau_control = outcomes[control_mask] - mu1.predict(X_numeric.loc[control_mask])
-    tau_treated = mu0.predict(X_numeric.loc[treated_mask]) - outcomes[treated_mask]
+    tau_control = outcomes[control_mask] - mu1.predict(X_numeric.iloc[control_idx])
+    tau_treated = mu0.predict(X_numeric.iloc[treated_idx]) - outcomes[treated_mask]
 
     tau_model_control = RandomForestRegressor(
         n_estimators=config.n_estimators,
@@ -157,12 +171,12 @@ def fit_x_learner_cate(
         max_depth=config.max_depth,
         random_state=config.random_state,
     )
-    tau_model_control.fit(X_numeric.loc[control_mask], tau_control)
-    tau_model_treated.fit(X_numeric.loc[treated_mask], tau_treated)
+    tau_model_control.fit(X_numeric.iloc[control_idx], tau_control)
+    tau_model_treated.fit(X_numeric.iloc[treated_idx], tau_treated)
 
     cate = predict_x_learner_cate(
         {"tau_control": tau_model_control, "tau_treated": tau_model_treated},
-        X_numeric,
+        X,
     )
     models = {
         "mu0": mu0,
@@ -176,7 +190,10 @@ def fit_x_learner_cate(
 def predict_x_learner_cate(models: dict[str, Any], X: pd.DataFrame) -> np.ndarray:
     """Predict CATE with an X-learner by averaging arm-specific effect models."""
 
+    from src.config import causal as causal_config
+
     X_numeric = _feature_matrix(X)
     tau_control = models["tau_control"].predict(X_numeric)
     tau_treated = models["tau_treated"].predict(X_numeric)
-    return 0.5 * (tau_control + tau_treated)
+    raw = 0.5 * (tau_control + tau_treated)
+    return np.clip(raw, causal_config.cate_clip_min, causal_config.cate_clip_max)
