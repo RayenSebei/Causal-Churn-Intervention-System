@@ -72,11 +72,14 @@ def inject_treatment_effect(
     """
 
     rng = np.random.default_rng(random_state)
-    churn_factual = churn_baseline.copy()
 
-    for i in range(len(churn_baseline)):
-        if treatment[i] == 1:
-            churn_factual[i] = float(np.clip(churn_baseline[i] - cate[i], 0, 1))
+    # Vectorised: if treated, reduce baseline by CATE (clip to [0,1]);
+    # otherwise keep baseline probability. numpy handles array-wise ops.
+    treated = np.asarray(treatment) == 1
+    churn_baseline = np.asarray(churn_baseline, dtype=float)
+    cate = np.asarray(cate, dtype=float)
+
+    churn_factual = np.where(treated, np.clip(churn_baseline - cate, 0.0, 1.0), churn_baseline)
 
     outcomes = rng.binomial(1, churn_factual)
     return outcomes, cate
@@ -293,13 +296,17 @@ def run_uplift_pipeline(
 def run_cli() -> None:
     """Convenience entry point for uplift modeling."""
 
+    from src.config import paths
+
     base_dir = Path(__file__).resolve().parent.parent
-    csv_path = base_dir / "WA_Fn-UseC_-Telco-Customer-Churn.csv"
-    model_path = base_dir / "models" / "baseline_churn_model.joblib"
+    csv_path = paths.raw_csv
+    model_path = paths.model_dir / "baseline_churn_model.joblib"
+
+    from src.constants import TARGET_COLUMN
 
     featured_df = load_featured_frame(csv_path)
-    X = featured_df.drop(columns=["Churn"])
-    y = featured_df["Churn"]
+    X = featured_df.drop(columns=[TARGET_COLUMN])
+    y = featured_df[TARGET_COLUMN]
     _, X_test, _, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
     model = joblib.load(model_path)
 

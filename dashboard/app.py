@@ -15,9 +15,10 @@ from dash import dcc, html, Input, Output, callback
 import numpy as np
 
 from src.dashboard_data import load_dashboard_data, compute_roi_metrics
+from src.config import paths
 
-DATA_PATH = BASE_DIR / "WA_Fn-UseC_-Telco-Customer-Churn.csv"
-MODEL_PATH = BASE_DIR / "models" / "baseline_churn_model.joblib"
+DATA_PATH = paths.raw_csv
+MODEL_PATH = paths.model_dir / "baseline_churn_model.joblib"
 
 dashboard_data = load_dashboard_data(DATA_PATH, MODEL_PATH)
 df = dashboard_data["df"].reset_index(drop=True)

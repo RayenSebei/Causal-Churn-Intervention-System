@@ -13,6 +13,7 @@ from sklearn.model_selection import train_test_split
 from src.explain import generate_customer_explanations
 from src.model import load_featured_frame
 from src.uplift import run_uplift_pipeline
+from src.constants import TARGET_COLUMN
 
 
 def load_dashboard_data(
@@ -33,8 +34,8 @@ def load_dashboard_data(
     """
 
     featured_df = load_featured_frame(csv_path)
-    X = featured_df.drop(columns=["Churn"])
-    y = featured_df["Churn"]
+    X = featured_df.drop(columns=[TARGET_COLUMN])
+    y = featured_df[TARGET_COLUMN]
 
     _, X_test, _, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
 

@@ -1,38 +1,34 @@
-"""Baseline churn prediction model training and evaluation."""
+"""Baseline churn prediction model training and evaluation.
+
+This module contains a lightweight training entry-point for the baseline
+XGBoost classifier. Evaluation plotting and metric computations have been
+consolidated into ``src.evaluation`` to avoid duplication.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Tuple
 
 import joblib
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from imblearn.over_sampling import SMOTE
 from imblearn.pipeline import Pipeline as ImbPipeline
-from sklearn.calibration import calibration_curve
-from sklearn.compose import ColumnTransformer
-from sklearn.impute import SimpleImputer
-from sklearn.metrics import (
-    average_precision_score,
-    brier_score_loss,
-    classification_report,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-)
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
 from xgboost import XGBClassifier
 
+from src.config import model as model_config
+from src.constants import TARGET_COLUMN, CUSTOMER_ID_COLUMN
 from src.data_prep import clean_telco_data, load_telco_data
+from src.evaluation import compute_metrics, plot_calibration_curve
 from src.features import add_feature_columns
+from src.logging_config import get_logger
 
-
-TARGET_COLUMN = "Churn"
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -47,18 +43,31 @@ class BaselineMetrics:
 
 
 def load_featured_frame(csv_path: str | Path) -> pd.DataFrame:
-    """Load and prepare the training frame from the raw CSV."""
+    """Load and prepare the training frame from the raw CSV.
 
+    Args:
+        csv_path: Path to the raw Telco CSV (or its parent directory).
+
+    Returns:
+        Featured DataFrame ready for modelling.
+    """
     raw_df = load_telco_data(csv_path)
     clean_df, _ = clean_telco_data(raw_df)
     featured_df = add_feature_columns(clean_df)
     return featured_df
 
 
-def build_preprocessor(feature_frame: pd.DataFrame) -> tuple[ColumnTransformer, list[str], list[str]]:
-    """Create a preprocessing transformer for mixed tabular features."""
+def build_preprocessor(feature_frame: pd.DataFrame):
+    """Create a preprocessing transformer for mixed tabular features.
 
-    excluded = {TARGET_COLUMN, "customerID"}
+    This helper inspects dtypes and separates numeric / categorical columns
+    while excluding the target and identifier columns.
+    """
+    from sklearn.compose import ColumnTransformer
+    from sklearn.impute import SimpleImputer
+    from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+    excluded = {TARGET_COLUMN, CUSTOMER_ID_COLUMN}
     numeric_columns = [
         column
         for column in feature_frame.columns
@@ -95,35 +104,33 @@ def build_preprocessor(feature_frame: pd.DataFrame) -> tuple[ColumnTransformer, 
 
 
 def build_classifier() -> XGBClassifier:
-    """Return the baseline classifier."""
-
+    """Return the baseline classifier using centrally-configured hyperparams."""
     return XGBClassifier(
-        n_estimators=250,
-        max_depth=4,
-        learning_rate=0.05,
-        subsample=0.85,
-        colsample_bytree=0.85,
-        reg_lambda=1.0,
-        min_child_weight=1,
-        objective="binary:logistic",
-        eval_metric="auc",
-        tree_method="hist",
-        random_state=42,
-        n_jobs=-1,
+        n_estimators=model_config.n_estimators,
+        max_depth=model_config.max_depth,
+        learning_rate=model_config.learning_rate,
+        subsample=model_config.subsample,
+        colsample_bytree=model_config.colsample_bytree,
+        reg_lambda=model_config.reg_lambda,
+        min_child_weight=model_config.min_child_weight,
+        objective=model_config.objective,
+        eval_metric=model_config.eval_metric,
+        tree_method=model_config.tree_method,
+        random_state=model_config.random_state,
+        n_jobs=model_config.n_jobs,
     )
 
 
-def make_pipeline(preprocessor: ColumnTransformer) -> ImbPipeline:
-    """SMOTE is applied only after preprocessing, inside training folds.
+def make_pipeline(preprocessor) -> ImbPipeline:
+    """Create a training pipeline that applies preprocessing, SMOTE, and model.
 
-    This avoids contaminating validation/test data while addressing class imbalance
-    more directly than class weights for the initial baseline.
+    Note: the pipeline produced here is intended for training only; the
+    inference pipeline saved for serving should omit SMOTE.
     """
-
     return ImbPipeline(
         steps=[
             ("preprocessor", preprocessor),
-            ("smote", SMOTE(random_state=42)),
+            ("smote", SMOTE(random_state=model_config.smote_random_state)),
             ("model", build_classifier()),
         ]
     )
@@ -135,32 +142,6 @@ def split_features_targets(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series
     return features, target
 
 
-def evaluate_threshold_metrics(y_true: pd.Series, y_prob: np.ndarray, threshold: float = 0.5) -> dict[str, float]:
-    y_pred = (y_prob >= threshold).astype(int)
-    return {
-        "test_precision": precision_score(y_true, y_pred, zero_division=0),
-        "test_recall": recall_score(y_true, y_pred, zero_division=0),
-        "test_brier_score": brier_score_loss(y_true, y_prob),
-    }
-
-
-def plot_calibration(y_true: pd.Series, y_prob: np.ndarray, output_path: str | Path) -> Path:
-    probability_true, probability_pred = calibration_curve(y_true, y_prob, n_bins=10, strategy="quantile")
-    fig, ax = plt.subplots(figsize=(7, 6))
-    ax.plot(probability_pred, probability_true, marker="o", label="Model")
-    ax.plot([0, 1], [0, 1], linestyle="--", label="Perfectly calibrated")
-    ax.set_xlabel("Predicted probability")
-    ax.set_ylabel("Observed frequency")
-    ax.set_title("Calibration Curve")
-    ax.legend()
-    fig.tight_layout()
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=160, bbox_inches="tight")
-    plt.close(fig)
-    return output_path
-
-
 def train_baseline_model(
     csv_path: str | Path,
     *,
@@ -168,13 +149,19 @@ def train_baseline_model(
     calibration_output_path: str | Path,
     random_state: int = 42,
 ) -> tuple[BaselineMetrics, dict[str, Any]]:
+    """Train the baseline churn model and produce evaluation artefacts.
+
+    This function performs an in-memory CV loop, fits on the full training
+    set, and returns a small metrics bundle plus artifacts (saved model,
+    calibration plot, classification report text, and test arrays).
+    """
     featured_df = load_featured_frame(csv_path)
     X, y = split_features_targets(featured_df)
 
     X_train, X_test, y_train, y_test = train_test_split(
         X,
         y,
-        test_size=0.2,
+        test_size=model_config.test_size,
         stratify=y,
         random_state=random_state,
     )
@@ -182,7 +169,7 @@ def train_baseline_model(
     preprocessor, _, _ = build_preprocessor(pd.concat([X_train, y_train.rename(TARGET_COLUMN)], axis=1))
     pipeline = make_pipeline(preprocessor)
 
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
+    cv = StratifiedKFold(n_splits=model_config.cv_folds, shuffle=True, random_state=random_state)
     cv_scores: list[float] = []
     for train_index, valid_index in cv.split(X_train, y_train):
         X_fold_train = X_train.iloc[train_index]
@@ -192,36 +179,41 @@ def train_baseline_model(
 
         pipeline.fit(X_fold_train, y_fold_train)
         valid_prob = pipeline.predict_proba(X_fold_valid)[:, 1]
+        from sklearn.metrics import roc_auc_score
+
         cv_scores.append(roc_auc_score(y_fold_valid, valid_prob))
 
     pipeline.fit(X_train, y_train)
     test_prob = pipeline.predict_proba(X_test)[:, 1]
-    test_metrics = {
-        "test_roc_auc": roc_auc_score(y_test, test_prob),
-        "test_average_precision": average_precision_score(y_test, test_prob),
-    }
-    test_metrics.update(evaluate_threshold_metrics(y_test, test_prob))
+
+    # Use the reusable evaluation helpers
+    eval_metrics = compute_metrics(y_test.values, test_prob, threshold=model_config.classification_threshold)
 
     metrics = BaselineMetrics(
         cv_roc_auc_mean=float(np.mean(cv_scores)),
         cv_roc_auc_std=float(np.std(cv_scores, ddof=1)),
-        test_roc_auc=float(test_metrics["test_roc_auc"]),
-        test_average_precision=float(test_metrics["test_average_precision"]),
-        test_precision=float(test_metrics["test_precision"]),
-        test_recall=float(test_metrics["test_recall"]),
-        test_brier_score=float(test_metrics["test_brier_score"]),
+        test_roc_auc=float(eval_metrics.roc_auc),
+        test_average_precision=float(eval_metrics.pr_auc),
+        test_precision=float(eval_metrics.precision),
+        test_recall=float(eval_metrics.recall),
+        test_brier_score=float(eval_metrics.brier_score),
     )
 
     model_output_path = Path(model_output_path)
     model_output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Save the training pipeline (contains SMOTE). For serving, callers may
+    # want to reconstruct an inference-only pipeline consisting of the
+    # preprocessor + model.
     joblib.dump(pipeline, model_output_path)
 
-    calibration_path = plot_calibration(y_test, test_prob, calibration_output_path)
+    calibration_path = plot_calibration_curve(y_test.values, test_prob, output_path=calibration_output_path)
+
+    from sklearn.metrics import classification_report
 
     artifacts = {
         "model_path": str(model_output_path),
         "calibration_path": str(calibration_path),
-        "classification_report": classification_report(y_test, (test_prob >= 0.5).astype(int), zero_division=0),
+        "classification_report": classification_report(y_test, (test_prob >= model_config.classification_threshold).astype(int), zero_division=0),
         "y_test": y_test,
         "y_prob": test_prob,
     }
@@ -230,10 +222,11 @@ def train_baseline_model(
 
 def run_cli() -> None:
     """Convenience entry point for ad hoc training."""
+    from src.config import paths
 
-    base_dir = Path.cwd().parent
+    base_dir = Path(__file__).parent.parent
     metrics, artifacts = train_baseline_model(
-        base_dir / "WA_Fn-UseC_-Telco-Customer-Churn.csv",
+        paths.raw_csv,
         model_output_path=base_dir / "models" / "baseline_churn_model.joblib",
         calibration_output_path=base_dir / "data" / "eda" / "phase2_calibration_curve.png",
     )

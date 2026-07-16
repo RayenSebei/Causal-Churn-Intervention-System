@@ -12,6 +12,7 @@ import pandas as pd
 import shap
 
 from src.model import load_featured_frame
+from src.constants import TARGET_COLUMN
 
 
 def load_trained_model(model_path: str | Path):
@@ -179,15 +180,17 @@ def generate_customer_explanations(
 def run_cli() -> None:
     """Convenience entry point for running explainability end to end."""
 
+    from src.config import paths
+
     base_dir = Path(__file__).resolve().parent.parent
-    model_path = base_dir / "models" / "baseline_churn_model.joblib"
+    model_path = paths.model_dir / "baseline_churn_model.joblib"
 
     model = load_trained_model(model_path)
-    featured_df = load_featured_frame(base_dir / "WA_Fn-UseC_-Telco-Customer-Churn.csv")
+    featured_df = load_featured_frame(paths.raw_csv)
 
     from sklearn.model_selection import train_test_split
-    X = featured_df.drop(columns=["Churn"])
-    y = featured_df["Churn"]
+    X = featured_df.drop(columns=[TARGET_COLUMN])
+    y = featured_df[TARGET_COLUMN]
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
 
     feature_names = list(X_test.columns)
