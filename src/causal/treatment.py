@@ -7,6 +7,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from src.config import causal as causal_config
+
 
 @dataclass(frozen=True)
 class TreatmentPolicy:
@@ -18,13 +20,60 @@ class TreatmentPolicy:
     random_state: int = 42
 
 
+def _default_treatment_policy(random_state: int | None = None) -> TreatmentPolicy:
+    return TreatmentPolicy(
+        high_charge_probability=causal_config.treatment_prob_high_charge,
+        month_to_month_probability=causal_config.treatment_prob_month_to_month,
+        baseline_probability=causal_config.treatment_prob_baseline,
+        random_state=causal_config.random_state if random_state is None else random_state,
+    )
+
+
 def assign_synthetic_treatment(
     df: pd.DataFrame,
     policy: TreatmentPolicy | None = None,
+    *,
+    treatment_prob_high_charge: float | None = None,
+    treatment_prob_month_to_month: float | None = None,
+    treatment_prob_baseline: float | None = None,
+    random_state: int | None = None,
 ) -> pd.Series:
-    """Assign a binary retention treatment with risk-based probabilities."""
+    """Assign a binary retention treatment with risk-based probabilities.
 
-    policy = policy or TreatmentPolicy()
+    Accepts either a ``TreatmentPolicy`` or the legacy keyword arguments used by
+    older callers.
+    """
+
+    if policy is None:
+        policy = _default_treatment_policy(random_state)
+        if any(
+            value is not None
+            for value in (
+                treatment_prob_high_charge,
+                treatment_prob_month_to_month,
+                treatment_prob_baseline,
+                random_state,
+            )
+        ):
+            policy = TreatmentPolicy(
+                high_charge_probability=(
+                    policy.high_charge_probability
+                    if treatment_prob_high_charge is None
+                    else treatment_prob_high_charge
+                ),
+                month_to_month_probability=(
+                    policy.month_to_month_probability
+                    if treatment_prob_month_to_month is None
+                    else treatment_prob_month_to_month
+                ),
+                baseline_probability=(
+                    policy.baseline_probability
+                    if treatment_prob_baseline is None
+                    else treatment_prob_baseline
+                ),
+                random_state=policy.random_state if random_state is None else random_state,
+            )
+
     rng = np.random.default_rng(policy.random_state)
     treatment_prob = np.full(len(df), policy.baseline_probability, dtype=float)
 

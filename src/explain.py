@@ -11,8 +11,8 @@ import numpy as np
 import pandas as pd
 import shap
 
-from src.model import load_featured_frame
 from src.constants import TARGET_COLUMN
+from src.training import load_featured_frame
 
 
 def load_trained_model(model_path: str | Path):

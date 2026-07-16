@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 from src.constants import TARGET_COLUMN
-from src.model import load_featured_frame
+from src.training import load_featured_frame
 
 
 def load_model(model_path: str | Path) -> Any:

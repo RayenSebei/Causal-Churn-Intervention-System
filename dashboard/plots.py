@@ -6,13 +6,8 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-SEGMENT_COLORS = {
-    "Persuadables": "#2ecc71",
-    "Sure Things": "#3498db",
-    "Lost Causes": "#e74c3c",
-    "Sleeping Dogs": "#f39c12",
-    "Low-Risk Upside": "#9b59b6",
-}
+from src.config import plots as plot_config
+from src.constants import SEGMENT_COLORS
 
 
 def segment_distribution_figure(df: pd.DataFrame) -> go.Figure:
@@ -30,13 +25,23 @@ def segment_distribution_figure(df: pd.DataFrame) -> go.Figure:
             )
         ]
     )
-    fig.update_layout(title="Customer Segments", xaxis_title="Segment", yaxis_title="Count", hovermode="x unified")
+    fig.update_layout(
+        title="Customer Segments",
+        xaxis_title="Segment",
+        yaxis_title="Count",
+        hovermode="x unified",
+    )
     return fig
 
 
 def churn_distribution_figure(df: pd.DataFrame) -> go.Figure:
     """Build the churn probability histogram."""
 
-    fig = px.histogram(df, x="churn_probability", nbins=30, title="Baseline Churn Probability Distribution")
+    fig = px.histogram(
+        df,
+        x="churn_probability",
+        nbins=plot_config.histogram_bins,
+        title="Baseline Churn Probability Distribution",
+    )
     fig.update_layout(xaxis_title="Churn Probability", yaxis_title="Count", hovermode="x unified")
     return fig
