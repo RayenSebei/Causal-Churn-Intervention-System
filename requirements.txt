@@ -2,7 +2,9 @@ pandas>=2.1
 numpy>=1.26
 matplotlib>=3.8
 seaborn>=0.13
-scikit-learn>=1.4
+# Pin scikit-learn to match the version used to train models/baseline_churn_model.joblib.
+# If you bump this pin, regenerate the model via: python retrain.py
+scikit-learn==1.9.0
 joblib>=1.3
 jupyter>=1.0
 xgboost>=2.0

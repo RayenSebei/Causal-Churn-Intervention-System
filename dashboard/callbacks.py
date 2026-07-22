@@ -5,10 +5,10 @@ from __future__ import annotations
 import pandas as pd
 from dash import Dash, Input, Output, html
 
-from dashboard.filters import customer_selector_options, filter_dashboard_frame
+from dashboard.filters import _safe_segment, customer_selector_options, filter_dashboard_frame
 from dashboard.plots import churn_distribution_figure, segment_distribution_figure
 from src.config import plots as plot_config
-from src.constants import CUSTOMER_ID_COLUMN, SEGMENT_COLORS
+from src.constants import ALL_SEGMENTS, CUSTOMER_ID_COLUMN, SEGMENT_COLORS
 from src.validation import summarize_segment_distribution, treated_churn_probability
 
 
@@ -21,10 +21,25 @@ def register_callbacks(app: Dash, df: pd.DataFrame) -> None:
         df["churn_probability"], df["uplift"]
     )
 
-    chart_counts = summarize_segment_distribution(df["segment"])
+    # Real consistency check: compare how the chart builds its counts
+    # (value_counts with dropna=False, matching plots.py) against the
+    # canonical summarize_segment_distribution helper.
+    chart_value_counts = df["segment"].value_counts(dropna=False)
+    chart_counts: dict[str, int] = {
+        seg: int(chart_value_counts.get(seg, 0)) for seg in ALL_SEGMENTS
+    }
+    # Include any non-canonical keys (e.g. NaN) so the check catches them.
+    for key, count in chart_value_counts.items():
+        str_key = str(key)
+        if str_key not in chart_counts:
+            chart_counts[str_key] = int(count)
+    chart_counts["total"] = int(chart_value_counts.sum())
     table_counts = summarize_segment_distribution(df["segment"])
     if chart_counts != table_counts:
-        raise RuntimeError("Internal segment count inconsistency at callback registration")
+        raise RuntimeError(
+            f"Segment count inconsistency at callback registration: "
+            f"chart={chart_counts}, table={table_counts}"
+        )
 
     @app.callback(
         Output("customer-table-container", "children"),
@@ -75,7 +90,7 @@ def register_callbacks(app: Dash, df: pd.DataFrame) -> None:
         if "Monthly $" in display_df.columns:
             display_df["Monthly $"] = display_df["Monthly $"].apply(lambda x: f"${float(x):.0f}")
         if "Segment" in display_df.columns:
-            display_df["Segment"] = display_df["Segment"].fillna("Unknown").astype(str)
+            display_df["Segment"] = display_df["Segment"].apply(_safe_segment)
 
         max_rows = min(plot_config.max_table_rows, len(display_df))
         return html.Table(
@@ -107,7 +122,7 @@ def register_callbacks(app: Dash, df: pd.DataFrame) -> None:
                                         "borderBottom": "1px solid #ddd",
                                         "backgroundColor": (
                                             SEGMENT_COLORS.get(
-                                                str(filtered_df.iloc[i]["segment"]), "#fff"
+                                                _safe_segment(filtered_df.iloc[i]["segment"]), "#fff"
                                             )
                                             if col == "Segment"
                                             else "#fff"
@@ -161,7 +176,7 @@ def register_callbacks(app: Dash, df: pd.DataFrame) -> None:
             if CUSTOMER_ID_COLUMN in customer.index and pd.notna(customer[CUSTOMER_ID_COLUMN])
             else f"CUST-{customer_idx}"
         )
-        segment = str(customer["segment"]) if pd.notna(customer["segment"]) else "Unknown"
+        segment = _safe_segment(customer.get("segment"))
         explanation = customer.get("shap_explanation", "No explanation available")
         if pd.isna(explanation) or str(explanation).strip() == "":
             explanation = "No explanation available"

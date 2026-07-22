@@ -18,9 +18,11 @@ Then open your browser to: **http://127.0.0.1:8050**
 ### 📋 **WHAT YOU'LL SEE**
 
 **Top Section — ROI Comparison (THE HEADLINE):**
-- **Targeted Strategy** (Persuadables + Sleeping Dogs): 0.01x ROI, 533 customers, $5,330 cost
-- **Blanket Strategy** (everyone): 0.01x ROI, 997 customers, $14,070 cost
-- **ROI improvement: 47.5%** — the targeted approach delivers dramatically better value
+- **Targeted Strategy** (Persuadables only): expected revenue saved, campaign cost, net profit, and ROI %.
+- **Blanket Strategy** (everyone): same metrics for comparison.
+- The targeted approach delivers better value per retention dollar spent.
+
+> **Note**: Exact ROI numbers, segment counts, and costs depend on the current model and data split. Run the dashboard to see up-to-date figures.
 
 **Middle Section — Customer Risk Table:**
 - Filterable by segment and contract type
@@ -28,7 +30,7 @@ Then open your browser to: **http://127.0.0.1:8050**
 - First 50 rows displayed (paginate in code if needed)
 
 **Bottom Section — Visualizations & Detail View:**
-- Segment distribution bar chart (Sleeping Dogs: 441, Sure Things: 262, Lost Causes: 202, Persuadables: 92)
+- Segment distribution bar chart showing the four segments: Persuadables, Sure Things, Lost Causes, Sleeping Dogs
 - Churn probability distribution histogram
 - Customer detail selector: pick any customer, see their SHAP-based churn drivers and treatment benefit
 
@@ -41,7 +43,7 @@ The system **reframes churn from a classification problem to a *decision* proble
 - But **"Should we spend retention budget on this customer, and why?"** (CATE-based targeting)
 
 The dashboard shows:
-1. Who to target (Persuadables + Sleeping Dogs)
+1. Who to target (**Persuadables only** — Sleeping Dogs are explicitly a "do not target" segment)
 2. Why they're at risk (SHAP explanations)
 3. How much bang-for-buck you get (ROI comparison)
 
@@ -62,7 +64,7 @@ stage/
 ├── src/
 │   ├── data_prep.py                       # Phase 1: clean TotalCharges, drop 11 rows
 │   ├── features.py                        # Phase 1: tenure buckets, service count
-│   ├── model.py                           # Phase 2: XGBoost baseline (ROC-AUC 0.8361)
+│   ├── model.py                           # Phase 2: XGBoost baseline
 │   ├── explain.py                         # Phase 3: SHAP explanations
 │   ├── uplift.py                          # Phase 4: T-learner CATE, segmentation
 │   └── dashboard_data.py                  # Phase 5: data integration
@@ -99,9 +101,9 @@ python dashboard/app.py
 | Phase | What | Status |
 |-------|------|--------|
 | 1 | Data cleaning + EDA | ✅ Complete |
-| 2 | Baseline XGBoost model | ✅ Complete (ROC-AUC 0.8361) |
-| 3 | SHAP explainability | ✅ Complete (3 examples shown) |
-| 4 | Uplift + segmentation | ✅ Complete (4 segments, 47.5% ROI gain) |
+| 2 | Baseline XGBoost model | ✅ Complete |
+| 3 | SHAP explainability | ✅ Complete |
+| 4 | Uplift + segmentation | ✅ Complete (4 segments: Persuadables, Sure Things, Lost Causes, Sleeping Dogs) |
 | 5 | Decision dashboard | ✅ Complete (Dash, http://127.0.0.1:8050) |
 | 6 | Production setup | ✅ Complete (retrain.py, requirements.txt, docs) |
 
@@ -109,7 +111,7 @@ python dashboard/app.py
 
 ### 🚀 **NEXT STEPS**
 
-1. **Validate against your business**: Does 47.5% ROI improvement match your expected cost structure?
+1. **Run the dashboard** to see current ROI numbers and segment distributions.
 2. **Integrate treatment data**: Replace synthetic assignment with real A/B test or pilot results.
 3. **Monitor in production**: Log predictions/treatments/outcomes for model monitoring.
 4. **Refine segments**: Use feedback to adjust percentile thresholds or segment definitions.

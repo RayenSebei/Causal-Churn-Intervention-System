@@ -58,3 +58,47 @@ def test_compute_roi_metrics_excludes_sleeping_dogs_and_adds_business_keys():
     assert "cost_per_retained_customer_targeted" in metrics
     # Legacy key still present
     assert "roi_targeted" in metrics
+
+
+def test_segment_consistency_check_passes_for_clean_data():
+    """The consistency check in callbacks.py should pass when all segments are
+    valid canonical labels (no NaN, no unknown labels)."""
+    df = _sample_frame()
+    from src.constants import ALL_SEGMENTS
+    from src.validation import summarize_segment_distribution
+
+    # Replicate the check from callbacks.py
+    chart_value_counts = df["segment"].value_counts(dropna=False)
+    chart_counts = {seg: int(chart_value_counts.get(seg, 0)) for seg in ALL_SEGMENTS}
+    for key, count in chart_value_counts.items():
+        str_key = str(key)
+        if str_key not in chart_counts:
+            chart_counts[str_key] = int(count)
+    chart_counts["total"] = int(chart_value_counts.sum())
+
+    table_counts = summarize_segment_distribution(df["segment"])
+    assert chart_counts == table_counts
+
+
+def test_segment_consistency_check_detects_nan_segment():
+    """When a segment is NaN, the chart (value_counts with dropna=False)
+    includes it under a 'nan' key while summarize_segment_distribution
+    reports it as zero for the canonical segments. This must cause
+    the consistency check to raise RuntimeError."""
+    df = _sample_frame()
+    df.loc[0, "segment"] = float("nan")  # inject a NaN segment
+
+    from src.constants import ALL_SEGMENTS
+    from src.validation import summarize_segment_distribution
+
+    chart_value_counts = df["segment"].value_counts(dropna=False)
+    chart_counts = {seg: int(chart_value_counts.get(seg, 0)) for seg in ALL_SEGMENTS}
+    for key, count in chart_value_counts.items():
+        str_key = str(key)
+        if str_key not in chart_counts:
+            chart_counts[str_key] = int(count)
+    chart_counts["total"] = int(chart_value_counts.sum())
+
+    table_counts = summarize_segment_distribution(df["segment"])
+    # They should NOT be equal because NaN adds a 'nan' key the canonical dict doesn't have
+    assert chart_counts != table_counts

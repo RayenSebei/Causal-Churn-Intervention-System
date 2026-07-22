@@ -13,7 +13,7 @@ from src.constants import SEGMENT_COLORS
 def segment_distribution_figure(df: pd.DataFrame) -> go.Figure:
     """Build the segment bar chart."""
 
-    segment_counts = df["segment"].value_counts()
+    segment_counts = df["segment"].value_counts(dropna=False)
     fig = go.Figure(
         data=[
             go.Bar(

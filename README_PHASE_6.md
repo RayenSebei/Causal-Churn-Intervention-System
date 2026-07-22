@@ -22,7 +22,7 @@ python dashboard/app.py
 Then navigate to **http://127.0.0.1:8050** in your browser.
 
 The dashboard will show:
-- **ROI Comparison** (top): Targeted (Persuadables + Sleeping Dogs) vs. Blanket spend — the core business case.
+- **ROI Comparison** (top): Targeted (Persuadables only) vs. Blanket spend — the core business case.
 - **Customer Risk Table**: Filtered by segment and contract type, with churn probability, uplift, and SHAP explanations.
 - **Segment Breakdown**: Visual distribution of customers across four segments.
 - **Customer Detail View**: Click any customer to see personalized churn drivers and treatment benefit.
@@ -44,7 +44,6 @@ The dashboard will show:
 - **Module**: `src/model.py`
 - XGBoost classifier with stratified 5-fold cross-validation.
 - Class imbalance: SMOTE applied only inside training folds (not on validation/test data).
-- **Metrics**: ROC-AUC 0.8451 (CV), 0.8361 (test); Precision 0.578, Recall 0.612.
 - Calibration curve visualized to ensure probability estimates are trustworthy.
 
 #### Phase 3: Explainability
@@ -57,15 +56,18 @@ The dashboard will show:
 - **Module**: `src/uplift.py`
 - **Synthetic treatment assignment**: Discount offered with higher probability to high-charge and month-to-month customers (realistic targeting bias).
 - **T-learner CATE estimation**: Separate random forest models for control and treatment arms; CATE = E[Y|X, T=0] - E[Y|X, T=1].
-- **Four-segment customer stratification**:
-  - **Persuadables** (92 customers): Moderate baseline churn (~22%), very high uplift (~92%). Sweet spot for targeting.
-  - **Sleeping Dogs** (441 customers): Moderate baseline (~20%), high uplift (~89%). Secondary targets.
-  - **Sure Things** (262 customers): Low baseline churn (~2%), low uplift. Already retained; wasteful to spend on.
-  - **Lost Causes** (202 customers): Very high baseline (~80%), minimal uplift (~3%). Unrecoverable; ROI negative.
+- **Four-segment customer stratification** (canonical 4-way uplift taxonomy):
+  - **Persuadables**: Positive uplift — the sweet spot for targeting. This is the only segment the system recommends spending retention budget on.
+  - **Sleeping Dogs**: Customers who may react adversely to intervention — explicitly a "do not target" segment.
+  - **Sure Things**: Low baseline churn, low uplift. Already retained; wasteful to spend on.
+  - **Lost Causes**: Very high baseline churn, minimal uplift. Unrecoverable; ROI negative.
+  - *(The former "Low-Risk Upside" segment is now merged into Persuadables.)*
+
+> **Note**: Exact segment counts and ROI numbers depend on the current model and data split. Run the dashboard (`python dashboard/app.py`) to see up-to-date numbers.
 
 #### Phase 5: Decision Dashboard
 - **App**: `dashboard/app.py` (Dash + Plotly)
-- **Headline KPI**: ROI comparison shows targeted spend (Persuadables + Sleeping Dogs) achieves **47.5% better ROI** than blanket discounting.
+- **Headline KPI**: ROI comparison shows targeted spend (Persuadables only) vs. blanket discounting.
 - **Customer Table**: Sortable, filterable by segment and contract; displays churn probability, uplift, and expected outcome if treated.
 - **Customer Detail View**: SHAP-based explanation of why each customer is at risk.
 
@@ -117,7 +119,7 @@ stage/
 ### Causal Modeling
 - **Realistic treatment bias**: Discount targeted to high-risk segments (high monthly charge, month-to-month contract) simulates real business behavior.
 - **Heterogeneous treatment effects**: CATE learned separately per segment reveals who benefits most from intervention.
-- **ROI focus**: Targeted spending (Persuadables + Sleeping Dogs) saves 47.5% more per dollar than blanket spend.
+- **Targeting rule**: Only **Persuadables** are targeted for retention spend. Sleeping Dogs are explicitly excluded ("do not target") because intervention may backfire.
 
 ### Dashboard as Decision Support
 - The ROI comparison is the headline: show it first and prominently.
@@ -150,7 +152,7 @@ Navigate to **http://127.0.0.1:8050**.
 ## Dependencies
 
 - `pandas`, `numpy`: Data manipulation.
-- `scikit-learn`: Preprocessing, model evaluation, cross-validation.
+- `scikit-learn`: Preprocessing, model evaluation, cross-validation. Pinned to match the version used to train the bundled model.
 - `xgboost`: Baseline classifier.
 - `imbalanced-learn`: SMOTE for class imbalance.
 - `shap`: Feature importance and customer explanations.

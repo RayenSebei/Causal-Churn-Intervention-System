@@ -97,10 +97,23 @@ def _build_dashboard_frame(
 
 
 @lru_cache(maxsize=4)
-def _load_dashboard_data_cached(csv_path: str, baseline_model_path: str) -> dict[str, Any]:
-    """Cache predictions / SHAP / segments for repeated dashboard launches."""
+def _load_dashboard_data_cached(
+    csv_path: str,
+    baseline_model_path: str,
+    csv_mtime_ns: int,
+    model_mtime_ns: int,
+) -> dict[str, Any]:
+    """Cache predictions / SHAP / segments for repeated dashboard launches.
 
-    logger.info("Building dashboard data cache for %s", csv_path)
+    The ``csv_mtime_ns`` and ``model_mtime_ns`` parameters are included in
+    the cache key so that a retrained model (or updated CSV) automatically
+    invalidates stale cached results without requiring a process restart.
+    """
+
+    logger.info(
+        "Building dashboard data cache for %s (csv_mtime=%s, model_mtime=%s)",
+        csv_path, csv_mtime_ns, model_mtime_ns,
+    )
     return _build_dashboard_frame(csv_path, baseline_model_path)
 
 
@@ -115,15 +128,17 @@ def load_dashboard_data(
     Splits once, then passes the same X_test/y_test/model into uplift and
     explanations so row alignment cannot silently desync.
 
-    Results are cached by absolute path (predictions, SHAP, segments, ROI inputs)
-    so repeated dashboard starts avoid full recomputation.
+    Results are cached by (absolute path, mtime) so a retrained model or
+    updated CSV automatically invalidates the cache.
     """
 
     csv_key = str(Path(csv_path).resolve())
     model_key = str(Path(baseline_model_path).resolve())
 
     if use_cache:
-        payload = _load_dashboard_data_cached(csv_key, model_key)
+        csv_mtime_ns = Path(csv_key).stat().st_mtime_ns
+        model_mtime_ns = Path(model_key).stat().st_mtime_ns
+        payload = _load_dashboard_data_cached(csv_key, model_key, csv_mtime_ns, model_mtime_ns)
     else:
         payload = _build_dashboard_frame(csv_key, model_key)
 

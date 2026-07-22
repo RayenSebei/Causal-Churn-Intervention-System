@@ -24,10 +24,11 @@ def filter_dashboard_frame(
 
 
 def _safe_segment(value: object) -> str:
+    from src.constants import FALLBACK_SEGMENT
     if value is None or (isinstance(value, float) and pd.isna(value)) or pd.isna(value):
-        return "Unknown"
+        return FALLBACK_SEGMENT
     text = str(value).strip()
-    return "Unknown" if text.lower() in {"", "nan", "none"} else text
+    return FALLBACK_SEGMENT if text.lower() in {"", "nan", "none", "unknown"} else text
 
 
 def _safe_customer_id(row: pd.Series, idx: object) -> str:
