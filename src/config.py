@@ -126,56 +126,13 @@ class CausalConfig:
 # ---------------------------------------------------------------------------
 
 @dataclass
-class InterventionSpec:
-    """Describes a single retention intervention type."""
-
-    name: str
-    cost_per_customer: float
-    acceptance_probability: float
-    description: str = ""
-
-
-@dataclass
 class CampaignConfig:
     """Budget and intervention parameters for ROI computation."""
 
     total_budget: float = 50_000.0
     default_discount_cost: float = 10.0
+    default_acceptance_probability: float = 0.60
     annual_revenue_multiplier: int = 12  # monthly → annual
-
-    interventions: List[InterventionSpec] = field(default_factory=lambda: [
-        InterventionSpec(
-            name="discount",
-            cost_per_customer=10.0,
-            acceptance_probability=0.60,
-            description="10% recurring discount for 3 months",
-        ),
-        InterventionSpec(
-            name="upgrade",
-            cost_per_customer=25.0,
-            acceptance_probability=0.40,
-            description="Free service-tier upgrade for 1 month",
-        ),
-        InterventionSpec(
-            name="support",
-            cost_per_customer=15.0,
-            acceptance_probability=0.50,
-            description="Proactive phone support call",
-        ),
-        InterventionSpec(
-            name="loyalty",
-            cost_per_customer=20.0,
-            acceptance_probability=0.45,
-            description="Loyalty reward (points / gift card)",
-        ),
-    ])
-
-    def get_intervention(self, name: str) -> InterventionSpec:
-        """Look up an intervention by name."""
-        for spec in self.interventions:
-            if spec.name == name:
-                return spec
-        raise KeyError(f"Unknown intervention: {name!r}")
 
 
 # ---------------------------------------------------------------------------

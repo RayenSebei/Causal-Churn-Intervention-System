@@ -49,7 +49,7 @@ def test_compute_roi_metrics_excludes_sleeping_dogs_and_adds_business_keys():
     metrics = compute_roi_metrics(df, discount_cost_per_customer=10.0)
     assert metrics["customers_targeted"] == 2
     assert metrics["customers_blanket"] == 4
-    assert metrics["cost_targeted"] == 20.0
+    assert metrics["cost_targeted"] == 12.0  # 2 * 10.0 * 0.60
     assert "expected_revenue_saved_targeted" in metrics
     assert "campaign_cost_targeted" in metrics
     assert "net_profit_targeted" in metrics
@@ -58,6 +58,33 @@ def test_compute_roi_metrics_excludes_sleeping_dogs_and_adds_business_keys():
     assert "cost_per_retained_customer_targeted" in metrics
     # Legacy key still present
     assert "roi_targeted" in metrics
+
+
+def test_compute_roi_metrics_regression_with_acceptance_probability():
+    df = pd.DataFrame(
+        {
+            "customerID": ["C1", "C2"],
+            "segment": [SEGMENT_PERSUADABLES, SEGMENT_PERSUADABLES],
+            "Contract": ["Month-to-month", "Month-to-month"],
+            "churn_probability": [0.5, 0.4],
+            "uplift": [0.2, 0.1],
+            "expected_churn_if_treated": [0.3, 0.3],
+            "MonthlyCharges": [100.0, 50.0],
+        }
+    )
+    # Scenario A: acceptance_probability = 0.5
+    metrics_a = compute_roi_metrics(df, discount_cost_per_customer=10.0, acceptance_probability=0.5)
+    assert metrics_a["campaign_cost_targeted"] == 10.0  # 2 * 10.0 * 0.5
+    assert metrics_a["expected_revenue_saved_targeted"] == 150.0  # (100 * 12 * 0.2 + 50 * 12 * 0.1) * 0.5
+    assert metrics_a["net_profit_targeted"] == 140.0
+    assert metrics_a["roi_pct_targeted"] == 1400.0
+
+    # Scenario B: acceptance_probability = 1.0
+    metrics_b = compute_roi_metrics(df, discount_cost_per_customer=10.0, acceptance_probability=1.0)
+    assert metrics_b["campaign_cost_targeted"] == 20.0
+    assert metrics_b["expected_revenue_saved_targeted"] == 300.0
+    assert metrics_b["net_profit_targeted"] == 280.0
+    assert metrics_b["roi_pct_targeted"] == 1400.0  # Should be exactly the same percentage
 
 
 def test_segment_consistency_check_passes_for_clean_data():

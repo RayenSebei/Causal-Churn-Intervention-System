@@ -32,6 +32,7 @@ def create_kpi_card(label: str, value: str, color: str = "#3498db") -> html.Div:
 def compute_roi_metrics(
     df: pd.DataFrame,
     discount_cost_per_customer: float | None = None,
+    acceptance_probability: float | None = None,
 ) -> dict[str, float]:
     """Compute retention-efficiency and business ROI metrics.
 
@@ -49,6 +50,9 @@ def compute_roi_metrics(
     if discount_cost_per_customer is None:
         discount_cost_per_customer = campaign_config.default_discount_cost
 
+    if acceptance_probability is None:
+        acceptance_probability = getattr(campaign_config, "default_acceptance_probability", 0.60)
+
     # Ensure treated probabilities are valid before aggregating.
     working = df.copy()
     working["expected_churn_if_treated"] = treated_churn_probability(
@@ -64,23 +68,34 @@ def compute_roi_metrics(
         (working["churn_probability"] - working["expected_churn_if_treated"]).sum()
     )
 
-    cost_targeted = float(len(targeted) * discount_cost_per_customer)
-    cost_blanket = float(len(working) * discount_cost_per_customer)
+    from src.causal.roi import expected_campaign_cost, expected_retained_revenue
+
+    cost_targeted = expected_campaign_cost(
+        discount_cost_per_customer, len(targeted), acceptance_probability
+    )
+    cost_blanket = expected_campaign_cost(
+        discount_cost_per_customer, len(working), acceptance_probability
+    )
 
     # Legacy efficiency metric: churn prevented per discount dollar.
     roi_targeted = churn_prevented_targeted / cost_targeted if cost_targeted > 0 else 0.0
     roi_blanket = churn_prevented_blanket / cost_blanket if cost_blanket > 0 else 0.0
     roi_improvement = (roi_targeted - roi_blanket) / roi_blanket if roi_blanket > 0 else 0.0
 
-    def _revenue_saved(subset: pd.DataFrame) -> float:
-        if "MonthlyCharges" not in subset.columns or len(subset) == 0:
-            return 0.0
-        prevented = subset["churn_probability"] - subset["expected_churn_if_treated"]
-        monthly = float((prevented * subset["MonthlyCharges"]).sum())
-        return monthly * float(campaign_config.annual_revenue_multiplier)
-
-    revenue_targeted = _revenue_saved(targeted)
-    revenue_blanket = _revenue_saved(working)
+    revenue_targeted = expected_retained_revenue(
+        monthly_charges=targeted["MonthlyCharges"] if "MonthlyCharges" in targeted.columns else pd.Series(dtype=float),
+        baseline_churn=targeted["churn_probability"],
+        treatment_effect=targeted["uplift"],
+        acceptance_probability=acceptance_probability,
+        annual_revenue_multiplier=campaign_config.annual_revenue_multiplier,
+    )
+    revenue_blanket = expected_retained_revenue(
+        monthly_charges=working["MonthlyCharges"] if "MonthlyCharges" in working.columns else pd.Series(dtype=float),
+        baseline_churn=working["churn_probability"],
+        treatment_effect=working["uplift"],
+        acceptance_probability=acceptance_probability,
+        annual_revenue_multiplier=campaign_config.annual_revenue_multiplier,
+    )
 
     net_profit_targeted = revenue_targeted - cost_targeted
     net_profit_blanket = revenue_blanket - cost_blanket

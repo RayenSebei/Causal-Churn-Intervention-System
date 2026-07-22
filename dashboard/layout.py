@@ -212,6 +212,45 @@ def build_layout(
             ),
             html.Div(
                 [
+                    html.H2(
+                        "CATE Estimation Recovery (Model Confidence)",
+                        style={"marginBottom": "10px", "color": "#222"},
+                    ),
+                    html.P(
+                        "These metrics describe how well the learned CATE (Conditional Average Treatment Effect) "
+                        "matches the synthetic simulation's ground-truth effect size in this evaluation run. "
+                        "They reflect estimation confidence/uncertainty, not campaign performance.",
+                        style={"color": "#666", "fontSize": "14px", "marginBottom": "20px"},
+                    ),
+                    html.Div(
+                        [
+                            create_kpi_card(
+                                "CATE Recovery Correlation",
+                                f"{uplift_meta['cate_recovery_corr']:.2f}",
+                                "#9b59b6",
+                            ),
+                            create_kpi_card(
+                                "CATE Recovery MAE",
+                                f"{uplift_meta['cate_recovery_mae']:.3f}",
+                                "#8e44ad",
+                            ),
+                        ],
+                        style={
+                            "display": "flex",
+                            "gap": "20px",
+                        },
+                    ),
+                ],
+                style={
+                    "backgroundColor": "#fff",
+                    "padding": "25px",
+                    "borderRadius": "10px",
+                    "marginBottom": "30px",
+                    "boxShadow": "0 2px 4px rgba(0,0,0,0.1)",
+                },
+            ),
+            html.Div(
+                [
                     html.H2("Customer Risk Table", style={"marginBottom": "15px"}),
                     html.Div(
                         [
